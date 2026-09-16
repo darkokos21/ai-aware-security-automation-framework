@@ -1,0 +1,58 @@
+services:
+  juice-shop:
+    image: bkimminich/juice-shop:latest
+    container_name: secure-test-ops-juice-shop
+    restart: unless-stopped
+    ports:
+      - "31001:3000"
+    networks:
+      - security-testing
+
+  zap:
+    image: zaproxy/zap-stable:latest
+    container_name: secure-test-ops-zap
+    restart: unless-stopped
+    ports:
+      - "31002:8080"
+    command:
+      - zap.sh
+      - -daemon
+      - -host
+      - 0.0.0.0
+      - -port
+      - "8080"
+      - -config
+      - api.addrs.addr.name=.*
+      - -config
+      - api.addrs.addr.regex=true
+      - -config
+      - api.key=secure-test-ops
+    networks:
+      - security-testing
+
+  secure-test-ops:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: secure-test-ops-runner
+    working_dir: /app
+    volumes:
+      - ..:/app
+    environment:
+      ZAP_URL: http://zap:8080
+      ZAP_API_KEY: secure-test-ops
+      ZAP_TARGET_URL: http://juice-shop:3000
+      BASE_URL: http://juice-shop:3000
+      API_URL: http://juice-shop:3000/api
+      REST_API_URL: http://juice-shop:3000/rest
+      LOG_LEVEL: INFO
+      HEADLESS: "true"
+    networks:
+      - security-testing
+    profiles:
+      - runner
+
+networks:
+  security-testing:
+    name: docker_security-testing
+    driver: bridge

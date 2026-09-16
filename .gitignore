@@ -1,0 +1,27 @@
+# Virtual environment
+.venv/
+
+# Environment variables / secrets
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Pytest
+.pytest_cache/
+
+# Playwright
+.playwright/
+
+# Test reports / generated security output
+reports/*
+!reports/.gitkeep
+
+# Type checking / linting caches
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
