@@ -1,11 +1,19 @@
-name: SecureTestOps CI
+name: Security Test Ops CI
 
 on:
   push:
+    branches:
+      - main
+      - develop
   pull_request:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
 
 jobs:
-  tests:
+  test:
+    name: Security Test Ops
     runs-on: ubuntu-latest
 
     steps:
@@ -22,7 +30,35 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: |
           playwright install --with-deps chromium
 
-      - name: Run tests
-        run: pytest tests api_tests ui_tests -v
+      - name: Validate Python modules
+        run: |
+          python -m py_compile \
+            framework/security_pytest_plugin.py \
+            framework/security_reporter.py
+
+      - name: Run AI framework tests
+        run: |
+          pytest tests -v
+
+      - name: Upload AI test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-test-report
+          path: reports/report.html
+          if-no-files-found: warn
+
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            reports/*.json
+            reports/*.md
+          if-no-files-found: warn
