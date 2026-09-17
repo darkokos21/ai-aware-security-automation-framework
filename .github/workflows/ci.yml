@@ -17,7 +17,6 @@ jobs:
   security-framework:
     name: Run Security Automation Framework
     runs-on: ubuntu-latest
-
     timeout-minutes: 30
 
     steps:
@@ -30,7 +29,7 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
@@ -39,22 +38,24 @@ jobs:
         run: |
           playwright install --with-deps chromium
 
-      - name: Start Juice Shop
+      - name: Start OWASP Juice Shop
         run: |
-          docker compose up -d juice-shop
+          docker compose -f docker/docker-compose.yml up -d juice-shop
 
-      - name: Wait for Juice Shop
+      - name: Wait for Juice Shop to become healthy
         run: |
           for i in {1..30}; do
             if curl -fs http://localhost:31001 > /dev/null; then
               echo "Juice Shop is ready."
               exit 0
             fi
+
             echo "Waiting for Juice Shop..."
             sleep 5
           done
+
           echo "Juice Shop failed to start."
-          docker compose logs juice-shop
+          docker compose -f docker/docker-compose.yml logs juice-shop
           exit 1
 
       - name: Run API security tests
@@ -69,7 +70,7 @@ jobs:
         run: |
           pytest tests -v
 
-      - name: Upload HTML test report
+      - name: Upload HTML report
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -77,7 +78,7 @@ jobs:
           path: reports/report.html
           if-no-files-found: warn
 
-      - name: Upload security reports
+      - name: Upload JSON and Markdown security reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -87,10 +88,19 @@ jobs:
             reports/*.md
           if-no-files-found: warn
 
-      - name: Upload Docker logs on failure
+      - name: Upload Docker logs if workflow fails
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: docker-logs
-          path: |
-            docker-compose.yml
+          path: docker-compose.log
+
+      - name: Save Docker logs
+        if: failure()
+        run: |
+          docker compose -f docker/docker-compose.yml logs juice-shop > docker-compose.log || true
+
+      - name: Stop Juice Shop
+        if: always()
+        run: |
+          docker compose -f docker/docker-compose.yml down -v
