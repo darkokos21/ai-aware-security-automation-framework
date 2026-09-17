@@ -45,6 +45,23 @@ jobs:
             -f docker/docker-compose.yml \
             up -d juice-shop zap
 
+          echo "Docker Compose status:"
+          docker compose \
+            -f docker/docker-compose.yml \
+            ps
+
+      - name: Inspect ZAP startup
+        run: |
+          echo "ZAP container status:"
+          docker compose \
+            -f docker/docker-compose.yml \
+            ps zap
+
+          echo "ZAP container logs:"
+          docker compose \
+            -f docker/docker-compose.yml \
+            logs --tail=100 zap
+
       - name: Wait for Juice Shop
         run: |
           for i in {1..30}; do
@@ -63,10 +80,12 @@ jobs:
 
           echo "Juice Shop failed to start."
 
+          echo "Docker Compose status:"
           docker compose \
             -f docker/docker-compose.yml \
             ps
 
+          echo "Juice Shop logs:"
           docker compose \
             -f docker/docker-compose.yml \
             logs --tail=200 juice-shop
@@ -75,29 +94,47 @@ jobs:
 
       - name: Wait for ZAP
         run: |
-          for i in {1..120}; do
+          for i in {1..60}; do
+            echo "Checking ZAP... attempt ${i}/60"
+
             if curl -fsS \
               --connect-timeout 5 \
               --max-time 10 \
               "http://localhost:31002/JSON/core/view/version/?apikey=secure-test-ops" \
-              > /dev/null; then
+              > /tmp/zap-response.json; then
+
               echo "ZAP is ready."
+              echo "ZAP API response:"
+              cat /tmp/zap-response.json
               exit 0
             fi
 
-            echo "Waiting for ZAP... attempt ${i}/120"
+            if [ "$((i % 5))" -eq 0 ]; then
+              echo "ZAP container status:"
+              docker compose \
+                -f docker/docker-compose.yml \
+                ps zap
+
+              echo "Recent ZAP logs:"
+              docker compose \
+                -f docker/docker-compose.yml \
+                logs --tail=50 zap
+            fi
+
             sleep 5
           done
 
-          echo "ZAP failed to start."
+          echo "ZAP failed to become ready."
 
+          echo "Final Docker Compose status:"
           docker compose \
             -f docker/docker-compose.yml \
             ps
 
+          echo "Final ZAP logs:"
           docker compose \
             -f docker/docker-compose.yml \
-            logs --tail=200 zap
+            logs --tail=300 zap
 
           exit 1
 
@@ -117,7 +154,7 @@ jobs:
             -f docker/docker-compose.yml \
             run --rm secure-test-ops
 
-      - name: Verify ZAP Report
+      - name: Verify ZAP report
         run: |
           echo "Checking for ZAP JSON report..."
 
@@ -150,28 +187,25 @@ jobs:
         run: |
           pytest tests -v
 
-      - name: Upload HTML test report
+      - name: Generate AI security report
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pytest-html-report
-          path: reports/report.html
-          if-no-files-found: warn
+        run: |
+          python -m framework.ai.report_generator \
+            --zap reports/zap-report.json \
+            --api reports/api-security-findings.json \
+            --ui reports/ui-security-findings.json \
+            --output reports/ai-security-report.md
+        continue-on-error: true
 
-      - name: Upload API test report
+      - name: Upload HTML test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: api-security-report
-          path: reports/api-report.html
-          if-no-files-found: warn
-
-      - name: Upload UI test report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ui-security-report
-          path: reports/ui-report.html
+          name: pytest-html-reports
+          path: |
+            reports/report.html
+            reports/api-report.html
+            reports/ui-report.html
           if-no-files-found: warn
 
       - name: Upload security reports
@@ -190,5 +224,4 @@ jobs:
         with:
           name: docker-logs
           path: |
-            docker/
-
+            docker/docker-compose.yml
