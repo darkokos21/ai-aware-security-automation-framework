@@ -56,7 +56,11 @@ jobs:
           done
 
           echo "Juice Shop failed to start."
-          docker compose -f docker/docker-compose.yml logs juice-shop
+
+          docker compose \
+            -f docker/docker-compose.yml \
+            logs juice-shop
+
           exit 1
 
       - name: Run API security tests
@@ -67,31 +71,15 @@ jobs:
         run: |
           pytest ui_tests -v || true
 
-      - name: Run OWASP ZAP baseline scan
+      - name: Run ZAP security scan
         run: |
           mkdir -p reports
 
-          set +e
-
-          docker run --rm \
-            --network host \
-            --workdir /zap/wrk \
-            -v "${{ github.workspace }}/reports:/zap/wrk:rw" \
-            ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py \
-            -t http://127.0.0.1:31001 \
-            -J zap-report.json \
-            -r zap-report.html \
-            -I
-
-          ZAP_EXIT_CODE=$?
-
-          echo "ZAP exit code: ${ZAP_EXIT_CODE}"
-
-          echo "Contents of reports directory after ZAP:"
-          ls -la reports
-
-          exit 0
+          docker compose \
+            -f docker/docker-compose.yml \
+            --profile runner \
+            run --rm secure-test-ops \
+            python -m zap.run_scan
 
       - name: Verify ZAP report
         run: |
