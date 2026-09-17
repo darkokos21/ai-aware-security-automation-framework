@@ -50,18 +50,6 @@ jobs:
             -f docker/docker-compose.yml \
             ps
 
-      - name: Inspect ZAP startup
-        run: |
-          echo "ZAP container status:"
-          docker compose \
-            -f docker/docker-compose.yml \
-            ps zap
-
-          echo "ZAP container logs:"
-          docker compose \
-            -f docker/docker-compose.yml \
-            logs --tail=100 zap
-
       - name: Wait for Juice Shop
         run: |
           for i in {1..30}; do
@@ -80,12 +68,10 @@ jobs:
 
           echo "Juice Shop failed to start."
 
-          echo "Docker Compose status:"
           docker compose \
             -f docker/docker-compose.yml \
             ps
 
-          echo "Juice Shop logs:"
           docker compose \
             -f docker/docker-compose.yml \
             logs --tail=200 juice-shop
@@ -97,15 +83,16 @@ jobs:
           for i in {1..60}; do
             echo "Checking ZAP... attempt ${i}/60"
 
-            if curl -fsS \
+            response="$(curl -sS \
               --connect-timeout 5 \
               --max-time 10 \
               "http://localhost:31002/JSON/core/view/version/?apikey=secure-test-ops" \
-              > /tmp/zap-response.json; then
+              || true)"
 
+            if echo "$response" | python -m json.tool > /dev/null 2>&1; then
               echo "ZAP is ready."
               echo "ZAP API response:"
-              cat /tmp/zap-response.json
+              echo "$response"
               exit 0
             fi
 
@@ -186,16 +173,6 @@ jobs:
       - name: Run AI pipeline tests
         run: |
           pytest tests -v
-
-      - name: Generate AI security report
-        if: always()
-        run: |
-          python -m framework.ai.report_generator \
-            --zap reports/zap-report.json \
-            --api reports/api-security-findings.json \
-            --ui reports/ui-security-findings.json \
-            --output reports/ai-security-report.md
-        continue-on-error: true
 
       - name: Upload HTML test reports
         if: always()

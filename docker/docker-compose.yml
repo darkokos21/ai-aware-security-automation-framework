@@ -9,7 +9,7 @@ services:
       - security-testing
 
   zap:
-    image: zaproxy/zap-stable:latest
+    image: zaproxy/zap-stable:2.16.0
     container_name: secure-test-ops-zap
     restart: unless-stopped
     ports:
