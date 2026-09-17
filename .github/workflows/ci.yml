@@ -39,9 +39,15 @@ jobs:
         run: |
           playwright install --with-deps chromium
 
-      - name: Start Juice Shop
+      # ---------------------------------------------------------
+      # Start target application and ZAP
+      # ---------------------------------------------------------
+
+      - name: Start Juice Shop and ZAP
         run: |
-          docker compose -f docker/docker-compose.yml up -d juice-shop
+          docker compose \
+            -f docker/docker-compose.yml \
+            up -d juice-shop zap
 
       - name: Wait for Juice Shop
         run: |
@@ -63,25 +69,39 @@ jobs:
 
           exit 1
 
-      - name: Run API security tests
+      - name: Wait for ZAP
         run: |
-          pytest api_tests -v || true
+          for i in {1..60}; do
+            if curl -fs \
+              "http://localhost:31002/JSON/core/view/version/?apikey=secure-test-ops" \
+              > /dev/null; then
+              echo "ZAP is ready."
+              exit 0
+            fi
 
-      - name: Run UI security tests
-        run: |
-          pytest ui_tests -v || true
+            echo "Waiting for ZAP..."
+            sleep 5
+          done
 
-      - name: Run ZAP security scan
-        run: |
-          mkdir -p reports
+          echo "ZAP failed to start."
 
           docker compose \
             -f docker/docker-compose.yml \
-            --profile runner \
-            run --rm secure-test-ops \
-            python -m zap.run_scan
+            logs zap
 
-      - name: Verify ZAP report
+          exit 1
+
+      # ---------------------------------------------------------
+      # OWASP ZAP security scan
+      # ---------------------------------------------------------
+
+      - name: Run ZAP security scan
+        run: |
+          docker compose \
+            -f docker/docker-compose.yml \
+            run --rm secure-test-ops
+
+      - name: Verify ZAP Report
         run: |
           echo "Checking for ZAP JSON report..."
 
@@ -94,22 +114,68 @@ jobs:
             echo "Searching workspace for any JSON reports:"
             find . -name "*.json" -type f -print
 
+            echo "ZAP container logs:"
+            docker compose \
+              -f docker/docker-compose.yml \
+              logs zap || true
+
             exit 1
           fi
 
           echo "ZAP report generated successfully:"
           ls -lh reports/zap-report.json
 
+      # ---------------------------------------------------------
+      # API security tests
+      # Findings against intentionally vulnerable Juice Shop
+      # are non-blocking and are collected as security findings.
+      # ---------------------------------------------------------
+
+      - name: Run API security tests
+        continue-on-error: true
+        run: |
+          pytest api_tests -v \
+            --html=reports/api-report.html \
+            --self-contained-html
+
+      # ---------------------------------------------------------
+      # UI security tests
+      # Findings against intentionally vulnerable Juice Shop
+      # are non-blocking and are collected as security findings.
+      # ---------------------------------------------------------
+
+      - name: Run UI security tests
+        continue-on-error: true
+        run: |
+          pytest ui_tests -v \
+            --html=reports/ui-report.html \
+            --self-contained-html
+
+      # ---------------------------------------------------------
+      # AI-aware security pipeline
+      # Requires:
+      #   - reports/zap-report.json
+      #   - reports/api-security-findings.json
+      #   - reports/ui-security-findings.json
+      # ---------------------------------------------------------
+
       - name: Run AI pipeline tests
         run: |
           pytest tests -v
+
+      # ---------------------------------------------------------
+      # Upload reports
+      # ---------------------------------------------------------
 
       - name: Upload HTML test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pytest-html-report
-          path: reports/report.html
+          path: |
+            reports/report.html
+            reports/api-report.html
+            reports/ui-report.html
           if-no-files-found: warn
 
       - name: Upload security reports
@@ -120,8 +186,18 @@ jobs:
           path: |
             reports/*.json
             reports/*.md
-            reports/*.html
           if-no-files-found: warn
+
+      # ---------------------------------------------------------
+      # Docker diagnostics
+      # ---------------------------------------------------------
+
+      - name: Show Docker status
+        if: always()
+        run: |
+          docker compose \
+            -f docker/docker-compose.yml \
+            ps
 
       - name: Upload Docker logs on failure
         if: failure()
@@ -129,4 +205,12 @@ jobs:
         with:
           name: docker-logs
           path: |
-            docker/docker-compose.yml
+            reports/
+          if-no-files-found: warn
+
+      - name: Stop Docker services
+        if: always()
+        run: |
+          docker compose \
+            -f docker/docker-compose.yml \
+            down
