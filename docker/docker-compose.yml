@@ -27,6 +27,10 @@ services:
       - api.addrs.addr.regex=true
       - -config
       - api.key=secure-test-ops
+      - -config
+      - autoupdate.checkOnStart=false
+      - -config
+      - autoupdate.downloadNewRelease=false
     networks:
       - security-testing
 

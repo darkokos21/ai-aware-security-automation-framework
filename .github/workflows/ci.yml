@@ -56,7 +56,7 @@ jobs:
             if curl -fsS \
               --connect-timeout 5 \
               --max-time 10 \
-              http://localhost:31001 \
+              http://127.0.0.1:31001 \
               > /dev/null; then
               echo "Juice Shop is ready."
               exit 0
@@ -80,23 +80,34 @@ jobs:
 
       - name: Wait for ZAP
         run: |
-          for i in {1..60}; do
-            echo "Checking ZAP... attempt ${i}/60"
+          timeout_seconds=900
+          interval_seconds=5
+          elapsed=0
+
+          while [ "$elapsed" -lt "$timeout_seconds" ]; do
+            echo "Checking ZAP... ${elapsed}/${timeout_seconds}s"
 
             response="$(curl -sS \
               --connect-timeout 5 \
               --max-time 10 \
-              "http://localhost:31002/JSON/core/view/version/?apikey=secure-test-ops" \
+              -w '\nHTTP_STATUS:%{http_code}' \
+              "http://127.0.0.1:31002/JSON/core/view/version/?apikey=secure-test-ops" \
               || true)"
 
-            if echo "$response" | python -m json.tool > /dev/null 2>&1; then
+            body="$(printf '%s\n' "$response" | sed '/HTTP_STATUS:/d')"
+            status="$(printf '%s\n' "$response" | awk -F: '/HTTP_STATUS:/ {print $2}')"
+
+            if [ "$status" = "200" ] &&
+              printf '%s\n' "$body" | python -m json.tool > /dev/null 2>&1; then
               echo "ZAP is ready."
               echo "ZAP API response:"
-              echo "$response"
+              printf '%s\n' "$body"
               exit 0
             fi
 
-            if [ "$((i % 5))" -eq 0 ]; then
+            if [ $((elapsed % 25)) -eq 0 ]; then
+              echo "ZAP is not ready yet. HTTP status: ${status:-unavailable}"
+
               echo "ZAP container status:"
               docker compose \
                 -f docker/docker-compose.yml \
@@ -108,7 +119,8 @@ jobs:
                 logs --tail=50 zap
             fi
 
-            sleep 5
+            sleep "$interval_seconds"
+            elapsed=$((elapsed + interval_seconds))
           done
 
           echo "ZAP failed to become ready."
