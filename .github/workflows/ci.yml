@@ -1,20 +1,24 @@
-name: Security Test Ops CI
+name: AI-Aware Security Automation Framework CI
 
 on:
   push:
     branches:
       - main
       - develop
+
   pull_request:
     branches:
       - main
       - develop
+
   workflow_dispatch:
 
 jobs:
-  test:
-    name: Security Test Ops
+  security-framework:
+    name: Run Security Automation Framework
     runs-on: ubuntu-latest
+
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -31,25 +35,45 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Install Playwright browsers
+      - name: Install Playwright Chromium
         run: |
           playwright install --with-deps chromium
 
-      - name: Validate Python modules
+      - name: Start Juice Shop
         run: |
-          python -m py_compile \
-            framework/security_pytest_plugin.py \
-            framework/security_reporter.py
+          docker compose up -d juice-shop
 
-      - name: Run AI framework tests
+      - name: Wait for Juice Shop
+        run: |
+          for i in {1..30}; do
+            if curl -fs http://localhost:31001 > /dev/null; then
+              echo "Juice Shop is ready."
+              exit 0
+            fi
+            echo "Waiting for Juice Shop..."
+            sleep 5
+          done
+          echo "Juice Shop failed to start."
+          docker compose logs juice-shop
+          exit 1
+
+      - name: Run API security tests
+        run: |
+          pytest api_tests -v || true
+
+      - name: Run UI security tests
+        run: |
+          pytest ui_tests -v || true
+
+      - name: Run AI pipeline tests
         run: |
           pytest tests -v
 
-      - name: Upload AI test report
+      - name: Upload HTML test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ai-test-report
+          name: pytest-html-report
           path: reports/report.html
           if-no-files-found: warn
 
@@ -62,3 +86,11 @@ jobs:
             reports/*.json
             reports/*.md
           if-no-files-found: warn
+
+      - name: Upload Docker logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-logs
+          path: |
+            docker-compose.yml
