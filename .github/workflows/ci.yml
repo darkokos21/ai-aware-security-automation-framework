@@ -77,12 +77,20 @@ jobs:
 
             if [ "$elapsed" -ge "$timeout" ]; then
               echo "Juice Shop failed to start."
-              docker compose -f docker/docker-compose.yml ps
-              docker compose -f docker/docker-compose.yml logs --no-color juice-shop
+
+              docker compose \
+                -f docker/docker-compose.yml \
+                ps
+
+              docker compose \
+                -f docker/docker-compose.yml \
+                logs --no-color juice-shop
+
               exit 1
             fi
 
             echo "Waiting for Juice Shop... ${elapsed}s"
+
             sleep 5
             elapsed=$((elapsed + 5))
           done
@@ -118,21 +126,55 @@ jobs:
               echo "ZAP API is ready."
               echo "ZAP API response:"
               printf '%s\n' "$body"
+
               exit 0
             fi
 
             echo "ZAP API is not ready yet. HTTP status: ${status:-unavailable}"
 
+            # --------------------------------------------------------
+            # Diagnostic information every 30 seconds
+            # --------------------------------------------------------
             if [ $((elapsed % 30)) -eq 0 ]; then
-              echo "ZAP container status:"
+              echo "============================================================"
+              echo "ZAP CONTAINER STATUS"
+              echo "============================================================"
+
               docker compose \
                 -f docker/docker-compose.yml \
                 ps zap
 
-              echo "Recent ZAP logs:"
+              echo "============================================================"
+              echo "ZAP CONTAINER INSPECT"
+              echo "============================================================"
+
+              docker inspect secure-test-ops-zap \
+                --format='Status={{.State.Status}} Health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'
+
+              echo "============================================================"
+              echo "ZAP PORT MAPPING"
+              echo "============================================================"
+
+              docker port secure-test-ops-zap
+
+              echo "============================================================"
+              echo "ZAP API CHECK FROM INSIDE CONTAINER"
+              echo "============================================================"
+
+              docker exec secure-test-ops-zap \
+                sh -c 'wget -qO- "http://127.0.0.1:8080/JSON/core/view/version/?apikey=secure-test-ops" || true'
+
+              echo
+              echo "============================================================"
+              echo "RECENT ZAP LOGS"
+              echo "============================================================"
+
               docker compose \
                 -f docker/docker-compose.yml \
-                logs --tail=40 --no-color zap
+                logs --tail=60 --no-color zap
+
+              echo
+              echo "============================================================"
             fi
 
             sleep "$interval"
@@ -141,12 +183,39 @@ jobs:
 
           echo "ZAP failed to become ready within ${timeout}s."
 
-          echo "Final Docker Compose status:"
+          echo "============================================================"
+          echo "FINAL DOCKER COMPOSE STATUS"
+          echo "============================================================"
+
           docker compose \
             -f docker/docker-compose.yml \
             ps
 
-          echo "Final ZAP logs:"
+          echo "============================================================"
+          echo "FINAL ZAP INSPECT"
+          echo "============================================================"
+
+          docker inspect secure-test-ops-zap \
+            --format='Status={{.State.Status}} Health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'
+
+          echo "============================================================"
+          echo "FINAL ZAP PORTS"
+          echo "============================================================"
+
+          docker port secure-test-ops-zap
+
+          echo "============================================================"
+          echo "FINAL ZAP API CHECK FROM INSIDE CONTAINER"
+          echo "============================================================"
+
+          docker exec secure-test-ops-zap \
+            sh -c 'wget -qO- "http://127.0.0.1:8080/JSON/core/view/version/?apikey=secure-test-ops" || true'
+
+          echo
+          echo "============================================================"
+          echo "FINAL ZAP LOGS"
+          echo "============================================================"
+
           docker compose \
             -f docker/docker-compose.yml \
             logs --tail=300 --no-color zap
@@ -200,7 +269,7 @@ jobs:
       # ------------------------------------------------------------
       # API Security Tests
       # ------------------------------------------------------------
-      - name: Run API security tests
+      - name: Run API Security Tests
         continue-on-error: true
         run: |
           pytest api_tests \
