@@ -28,9 +28,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
+          cache: pip
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
@@ -39,53 +39,44 @@ jobs:
         run: |
           playwright install --with-deps chromium
 
+      # ------------------------------------------------------------
+      # Start application and ZAP
+      # ------------------------------------------------------------
       - name: Start Juice Shop and ZAP
         run: |
           docker compose \
             -f docker/docker-compose.yml \
             up -d juice-shop zap
 
-          echo "Docker Compose status:"
-          docker compose \
-            -f docker/docker-compose.yml \
-            ps
-
       - name: Wait for Juice Shop
         run: |
-          for i in {1..30}; do
-            if curl -fsS \
-              --connect-timeout 5 \
-              --max-time 10 \
-              http://127.0.0.1:31001 \
-              > /dev/null; then
-              echo "Juice Shop is ready."
-              exit 0
-            fi
-
-            echo "Waiting for Juice Shop... attempt ${i}/30"
-            sleep 5
-          done
-
-          echo "Juice Shop failed to start."
-
-          docker compose \
-            -f docker/docker-compose.yml \
-            ps
-
-          docker compose \
-            -f docker/docker-compose.yml \
-            logs --tail=200 juice-shop
-
-          exit 1
-
-      - name: Wait for ZAP
-        run: |
-          timeout_seconds=900
+          timeout_seconds=120
           interval_seconds=5
           elapsed=0
 
           while [ "$elapsed" -lt "$timeout_seconds" ]; do
-            echo "Checking ZAP... ${elapsed}/${timeout_seconds}s"
+            if curl -fsS http://127.0.0.1:31001 > /dev/null; then
+              echo "Juice Shop is ready."
+              exit 0
+            fi
+
+            echo "Waiting for Juice Shop... ${elapsed}/${timeout_seconds}s"
+            sleep "$interval_seconds"
+            elapsed=$((elapsed + interval_seconds))
+          done
+
+          echo "Juice Shop failed to start."
+          docker compose -f docker/docker-compose.yml logs juice-shop
+          exit 1
+
+      - name: Wait for ZAP API
+        run: |
+          timeout_seconds=180
+          interval_seconds=5
+          elapsed=0
+
+          while [ "$elapsed" -lt "$timeout_seconds" ]; do
+            echo "Checking ZAP API... ${elapsed}/${timeout_seconds}s"
 
             response="$(curl -sS \
               --connect-timeout 5 \
@@ -97,61 +88,56 @@ jobs:
             body="$(printf '%s\n' "$response" | sed '/HTTP_STATUS:/d')"
             status="$(printf '%s\n' "$response" | awk -F: '/HTTP_STATUS:/ {print $2}')"
 
-            if [ "$status" = "200" ] &&
+            if [ "$status" = "200" ] && \
               printf '%s\n' "$body" | python -m json.tool > /dev/null 2>&1; then
-              echo "ZAP is ready."
-              echo "ZAP API response:"
+              echo "ZAP API is ready."
               printf '%s\n' "$body"
               exit 0
             fi
 
-            if [ $((elapsed % 25)) -eq 0 ]; then
-              echo "ZAP is not ready yet. HTTP status: ${status:-unavailable}"
-
-              echo "ZAP container status:"
+            if [ $((elapsed % 30)) -eq 0 ]; then
+              echo "Current HTTP status: ${status:-none}"
               docker compose \
                 -f docker/docker-compose.yml \
                 ps zap
 
-              echo "Recent ZAP logs:"
               docker compose \
                 -f docker/docker-compose.yml \
-                logs --tail=50 zap
+                logs --tail=30 zap
             fi
 
             sleep "$interval_seconds"
             elapsed=$((elapsed + interval_seconds))
           done
 
-          echo "ZAP failed to become ready."
+          echo "ZAP API never became ready."
 
-          echo "Final Docker Compose status:"
           docker compose \
             -f docker/docker-compose.yml \
             ps
 
-          echo "Final ZAP logs:"
           docker compose \
             -f docker/docker-compose.yml \
             logs --tail=300 zap
 
           exit 1
 
-      - name: Run API security tests
-        continue-on-error: true
+      # ------------------------------------------------------------
+      # Run ZAP passive scan
+      # ------------------------------------------------------------
+      - name: Run ZAP baseline scan
         run: |
-          pytest api_tests -v --html=reports/api-report.html
+          mkdir -p reports
 
-      - name: Run UI security tests
-        continue-on-error: true
-        run: |
-          pytest ui_tests -v --html=reports/ui-report.html
-
-      - name: Run ZAP security scan
-        run: |
-          docker compose \
-            -f docker/docker-compose.yml \
-            run --rm secure-test-ops
+          docker run --rm \
+            --network docker_security-testing \
+            -v "$(pwd)/reports:/zap/wrk" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+              -t http://juice-shop:3000 \
+              -J zap-report.json \
+              -r zap-report.html \
+              -I
 
       - name: Verify ZAP report
         run: |
@@ -159,42 +145,50 @@ jobs:
 
           if [ ! -f reports/zap-report.json ]; then
             echo "ZAP report was not generated."
-
-            echo "Reports directory:"
             ls -la reports
-
-            echo "Searching workspace for any JSON reports:"
-            find . -name "*.json" -type f -print
-
-            echo "Docker Compose status:"
-            docker compose \
-              -f docker/docker-compose.yml \
-              ps
-
-            echo "ZAP logs:"
-            docker compose \
-              -f docker/docker-compose.yml \
-              logs --tail=200 zap
-
             exit 1
           fi
 
-          echo "ZAP report generated successfully:"
+          echo "ZAP report generated successfully."
           ls -lh reports/zap-report.json
 
+      # ------------------------------------------------------------
+      # Security test suites (findings are expected)
+      # ------------------------------------------------------------
+      - name: Run API security tests
+        continue-on-error: true
+        run: |
+          pytest api_tests -v \
+            --html=reports/api-report.html \
+            --self-contained-html
+
+      - name: Run UI security tests
+        continue-on-error: true
+        run: |
+          pytest ui_tests -v \
+            --html=reports/ui-report.html \
+            --self-contained-html
+
+      # ------------------------------------------------------------
+      # AI pipeline (must pass)
+      # ------------------------------------------------------------
       - name: Run AI pipeline tests
         run: |
           pytest tests -v
 
-      - name: Upload HTML test reports
+      # ------------------------------------------------------------
+      # Upload artifacts
+      # ------------------------------------------------------------
+      - name: Upload HTML reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pytest-html-reports
+          name: html-reports
           path: |
             reports/report.html
             reports/api-report.html
             reports/ui-report.html
+            reports/zap-report.html
           if-no-files-found: warn
 
       - name: Upload security reports
@@ -209,8 +203,31 @@ jobs:
 
       - name: Upload Docker logs on failure
         if: failure()
+        run: |
+          mkdir -p reports/docker-logs
+
+          docker compose \
+            -f docker/docker-compose.yml \
+            logs juice-shop > reports/docker-logs/juice-shop.log || true
+
+          docker compose \
+            -f docker/docker-compose.yml \
+            logs zap > reports/docker-logs/zap.log || true
+
+      - name: Upload Docker logs artifact
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: docker-logs
-          path: |
-            docker/docker-compose.yml
+          path: reports/docker-logs
+          if-no-files-found: warn
+
+      # ------------------------------------------------------------
+      # Cleanup
+      # ------------------------------------------------------------
+      - name: Stop containers
+        if: always()
+        run: |
+          docker compose \
+            -f docker/docker-compose.yml \
+            down -v
