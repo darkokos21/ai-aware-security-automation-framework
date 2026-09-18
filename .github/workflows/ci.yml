@@ -11,9 +11,10 @@ on:
 
 jobs:
   security-framework:
-    name: Security Automation Framework
+    name: Run Security Automation Framework
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
@@ -31,11 +32,13 @@ jobs:
           pip install -r requirements.txt
 
       - name: Install Playwright Chromium
-        run: playwright install --with-deps chromium
+        run: |
+          playwright install --with-deps chromium
 
-      # -----------------------------
-      # Start vulnerable application
-      # -----------------------------
+      # ---------------------------------------------------------
+      # Start Juice Shop
+      # ---------------------------------------------------------
+
       - name: Start Juice Shop
         run: |
           docker compose -f docker/docker-compose.yml up -d juice-shop
@@ -43,11 +46,10 @@ jobs:
       - name: Wait for Juice Shop
         run: |
           timeout=120
+          elapsed=0
 
-          until curl -fs http://127.0.0.1:31001 >/dev/null; do
-            timeout=$((timeout-5))
-
-            if [ "$timeout" -le 0 ]; then
+          until curl -fs http://localhost:31001 > /dev/null; do
+            if [ "$elapsed" -ge "$timeout" ]; then
               echo "Juice Shop failed to start."
               docker compose -f docker/docker-compose.yml logs juice-shop
               exit 1
@@ -55,25 +57,42 @@ jobs:
 
             echo "Waiting for Juice Shop..."
             sleep 5
+            elapsed=$((elapsed+5))
           done
 
           echo "Juice Shop is ready."
 
-      # -----------------------------
-      # Run ZAP Baseline Scan
-      # -----------------------------
+      # ---------------------------------------------------------
+      # API/UI security tests
+      # (expected findings should not fail CI)
+      # ---------------------------------------------------------
+
+      - name: Run API security tests
+        continue-on-error: true
+        run: |
+          pytest api_tests -v \
+            --html=reports/api-report.html \
+            --self-contained-html
+
+      - name: Run UI security tests
+        continue-on-error: true
+        run: |
+          pytest ui_tests -v \
+            --html=reports/ui-report.html \
+            --self-contained-html
+
+      # ---------------------------------------------------------
+      # ZAP Baseline Scan (robust report generation)
+      # ---------------------------------------------------------
+
       - name: Run ZAP Baseline Scan
         continue-on-error: true
         run: |
           mkdir -p reports
-          chmod -R 777 reports
 
-          set +e
-
-          docker run --rm \
-            --user "$(id -u):$(id -g)" \
+          docker create \
+            --name zap-baseline \
             --network docker_security-testing \
-            -v "$GITHUB_WORKSPACE/reports:/zap/wrk:rw" \
             zaproxy/zap-stable:2.16.0 \
             zap-baseline.py \
               -t http://juice-shop:3000 \
@@ -81,70 +100,69 @@ jobs:
               -r /zap/wrk/zap-report.html \
               -I
 
-          ZAP_EXIT_CODE=$?
+          docker start -a zap-baseline || true
 
-          set -e
+          docker cp zap-baseline:/zap/wrk/zap-report.json reports/zap-report.json || true
+          docker cp zap-baseline:/zap/wrk/zap-report.html reports/zap-report.html || true
 
-          echo "ZAP exited with code: $ZAP_EXIT_CODE"
-          echo "Reports directory contents:"
-          ls -la reports
+          docker rm -f zap-baseline
 
-      # -----------------------------
-      # Verify ZAP reports exist
-      # -----------------------------
       - name: Verify ZAP Reports
         run: |
           echo "Checking generated ZAP reports..."
-
           ls -la reports
 
-          test -f reports/zap-report.json
-          test -f reports/zap-report.html
+          if [ ! -f reports/zap-report.json ]; then
+            echo "❌ Missing reports/zap-report.json"
+            exit 1
+          fi
 
-          echo "ZAP reports generated successfully:"
+          if [ ! -f reports/zap-report.html ]; then
+            echo "❌ Missing reports/zap-report.html"
+            exit 1
+          fi
+
+          echo "✅ ZAP reports generated successfully:"
           ls -lh reports/zap-report.*
 
-      # -----------------------------
-      # API security tests
-      # -----------------------------
-      - name: Run API Security Tests
-        continue-on-error: true
+      # ---------------------------------------------------------
+      # AI pipeline (must pass)
+      # ---------------------------------------------------------
+
+      - name: Run AI pipeline tests
         run: |
-          pytest api_tests -v \
-            --html=reports/api-report.html \
-            --self-contained-html
+          pytest tests -v
 
-      # -----------------------------
-      # UI security tests
-      # -----------------------------
-      - name: Run UI Security Tests
-        continue-on-error: true
-        run: |
-          pytest ui_tests -v \
-            --html=reports/ui-report.html \
-            --self-contained-html
+      # ---------------------------------------------------------
+      # Upload artifacts
+      # ---------------------------------------------------------
 
-      # -----------------------------
-      # AI correlation / reporting tests
-      # -----------------------------
-      - name: Run AI Pipeline Tests
-        run: pytest tests -v
-
-      # -----------------------------
-      # Upload reports
-      # -----------------------------
-      - name: Upload Reports
+      - name: Upload HTML reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: security-reports
-          path: reports/
+          name: html-test-reports
+          path: |
+            reports/api-report.html
+            reports/ui-report.html
+            reports/zap-report.html
           if-no-files-found: warn
 
-      - name: Upload Docker Logs
+      - name: Upload JSON reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-json-reports
+          path: |
+            reports/api-security-findings.json
+            reports/ui-security-findings.json
+            reports/zap-report.json
+          if-no-files-found: warn
+
+      - name: Upload Docker logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: docker-logs
           path: |
-            docker/docker-compose.yml
+            reports/
