@@ -2,132 +2,111 @@ name: AI-Aware Security Automation Framework CI
 
 on:
   push:
-    branches:
-      - main
-      - develop
+    branches: [main, develop]
 
   pull_request:
-    branches:
-      - main
-      - develop
+    branches: [main, develop]
 
   workflow_dispatch:
 
 jobs:
   security-framework:
-    name: Run Security Automation Framework
+    name: Security Automation Framework
     runs-on: ubuntu-latest
-
     timeout-minutes: 35
 
     steps:
-      # ------------------------------------------------------------
-      # Checkout repository
-      # ------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # Python setup
-      # ------------------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ------------------------------------------------------------
-      # Playwright browser
-      # ------------------------------------------------------------
       - name: Install Playwright Chromium
-        run: |
-          playwright install --with-deps chromium
+        run: playwright install --with-deps chromium
 
-      # ------------------------------------------------------------
-      # Start Juice Shop
-      # ------------------------------------------------------------
+      # -----------------------------
+      # Start vulnerable application
+      # -----------------------------
       - name: Start Juice Shop
         run: |
-          docker compose \
-            -f docker/docker-compose.yml \
-            up -d juice-shop
+          docker compose -f docker/docker-compose.yml up -d juice-shop
 
       - name: Wait for Juice Shop
         run: |
-          timeout_seconds=120
-          interval_seconds=5
-          elapsed=0
+          timeout=120
 
-          while [ "$elapsed" -lt "$timeout_seconds" ]; do
-            if curl -fsS http://127.0.0.1:31001 > /dev/null; then
-              echo "Juice Shop is ready."
-              exit 0
+          until curl -fs http://127.0.0.1:31001 >/dev/null; do
+            timeout=$((timeout-5))
+
+            if [ "$timeout" -le 0 ]; then
+              echo "Juice Shop failed to start."
+              docker compose -f docker/docker-compose.yml logs juice-shop
+              exit 1
             fi
 
-            echo "Waiting for Juice Shop... ${elapsed}/${timeout_seconds}s"
-            sleep "$interval_seconds"
-            elapsed=$((elapsed + interval_seconds))
+            echo "Waiting for Juice Shop..."
+            sleep 5
           done
 
-          echo "Juice Shop failed to start."
+          echo "Juice Shop is ready."
 
-          docker compose \
-            -f docker/docker-compose.yml \
-            logs juice-shop
-
-          exit 1
-
-      # ------------------------------------------------------------
-      # OWASP ZAP Baseline Scan
-      # ------------------------------------------------------------
+      # -----------------------------
+      # Run ZAP Baseline Scan
+      # -----------------------------
       - name: Run ZAP Baseline Scan
         continue-on-error: true
         run: |
           mkdir -p reports
+          chmod -R 777 reports
+
+          set +e
 
           docker run --rm \
+            --user "$(id -u):$(id -g)" \
             --network docker_security-testing \
-            -v "$(pwd)/reports:/zap/wrk:rw" \
-            ghcr.io/zaproxy/zaproxy:stable \
+            -v "$GITHUB_WORKSPACE/reports:/zap/wrk:rw" \
+            zaproxy/zap-stable:2.16.0 \
             zap-baseline.py \
               -t http://juice-shop:3000 \
-              -J zap-report.json \
-              -r zap-report.html \
-              -I || true
+              -J /zap/wrk/zap-report.json \
+              -r /zap/wrk/zap-report.html \
+              -I
 
-          echo "Contents of reports directory after ZAP scan:"
+          ZAP_EXIT_CODE=$?
+
+          set -e
+
+          echo "ZAP exited with code: $ZAP_EXIT_CODE"
+          echo "Reports directory contents:"
           ls -la reports
 
-      # ------------------------------------------------------------
+      # -----------------------------
       # Verify ZAP reports exist
-      # ------------------------------------------------------------
+      # -----------------------------
       - name: Verify ZAP Reports
         run: |
           echo "Checking generated ZAP reports..."
 
           ls -la reports
 
-          if [ ! -f reports/zap-report.json ]; then
-            echo "❌ ZAP JSON report is missing."
-            exit 1
-          fi
+          test -f reports/zap-report.json
+          test -f reports/zap-report.html
 
-          if [ ! -f reports/zap-report.html ]; then
-            echo "❌ ZAP HTML report is missing."
-            exit 1
-          fi
-
-          echo "✅ ZAP reports generated successfully:"
+          echo "ZAP reports generated successfully:"
           ls -lh reports/zap-report.*
 
-      # ------------------------------------------------------------
+      # -----------------------------
       # API security tests
-      # ------------------------------------------------------------
+      # -----------------------------
       - name: Run API Security Tests
         continue-on-error: true
         run: |
@@ -135,9 +114,9 @@ jobs:
             --html=reports/api-report.html \
             --self-contained-html
 
-      # ------------------------------------------------------------
+      # -----------------------------
       # UI security tests
-      # ------------------------------------------------------------
+      # -----------------------------
       - name: Run UI Security Tests
         continue-on-error: true
         run: |
@@ -145,64 +124,27 @@ jobs:
             --html=reports/ui-report.html \
             --self-contained-html
 
-      # ------------------------------------------------------------
-      # AI correlation / reporting pipeline
-      # ------------------------------------------------------------
+      # -----------------------------
+      # AI correlation / reporting tests
+      # -----------------------------
       - name: Run AI Pipeline Tests
-        run: |
-          pytest tests -v
+        run: pytest tests -v
 
-      # ------------------------------------------------------------
+      # -----------------------------
       # Upload reports
-      # ------------------------------------------------------------
-      - name: Upload HTML Reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: html-reports
-          path: |
-            reports/report.html
-            reports/api-report.html
-            reports/ui-report.html
-            reports/zap-report.html
-          if-no-files-found: warn
-
-      - name: Upload Security Reports
+      # -----------------------------
+      - name: Upload Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-reports
-          path: |
-            reports/*.json
-            reports/*.md
+          path: reports/
           if-no-files-found: warn
-
-      # ------------------------------------------------------------
-      # Docker logs if CI fails
-      # ------------------------------------------------------------
-      - name: Save Docker Logs on Failure
-        if: failure()
-        run: |
-          mkdir -p reports/docker-logs
-
-          docker compose \
-            -f docker/docker-compose.yml \
-            logs juice-shop > reports/docker-logs/juice-shop.log || true
 
       - name: Upload Docker Logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: docker-logs
-          path: reports/docker-logs
-          if-no-files-found: warn
-
-      # ------------------------------------------------------------
-      # Cleanup
-      # ------------------------------------------------------------
-      - name: Stop Containers
-        if: always()
-        run: |
-          docker compose \
-            -f docker/docker-compose.yml \
-            down -v
+          path: |
+            docker/docker-compose.yml
