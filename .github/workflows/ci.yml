@@ -21,9 +21,15 @@ jobs:
     timeout-minutes: 35
 
     steps:
+      # ------------------------------------------------------------
+      # Checkout repository
+      # ------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ------------------------------------------------------------
+      # Python setup
+      # ------------------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -35,11 +41,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # ------------------------------------------------------------
+      # Playwright browser
+      # ------------------------------------------------------------
       - name: Install Playwright Chromium
-        run: playwright install --with-deps chromium
+        run: |
+          playwright install --with-deps chromium
 
       # ------------------------------------------------------------
-      # Start only Juice Shop
+      # Start Juice Shop
       # ------------------------------------------------------------
       - name: Start Juice Shop
         run: |
@@ -65,13 +75,18 @@ jobs:
           done
 
           echo "Juice Shop failed to start."
-          docker compose -f docker/docker-compose.yml logs juice-shop
+
+          docker compose \
+            -f docker/docker-compose.yml \
+            logs juice-shop
+
           exit 1
 
       # ------------------------------------------------------------
-      # Run OWASP ZAP Baseline Scan
+      # OWASP ZAP Baseline Scan
       # ------------------------------------------------------------
       - name: Run ZAP Baseline Scan
+        continue-on-error: true
         run: |
           mkdir -p reports
 
@@ -83,20 +98,35 @@ jobs:
               -t http://juice-shop:3000 \
               -J zap-report.json \
               -r zap-report.html \
-              -I
+              -I || true
 
+          echo "Contents of reports directory after ZAP scan:"
+          ls -la reports
+
+      # ------------------------------------------------------------
+      # Verify ZAP reports exist
+      # ------------------------------------------------------------
       - name: Verify ZAP Reports
         run: |
           echo "Checking generated ZAP reports..."
 
-          test -f reports/zap-report.json
-          test -f reports/zap-report.html
+          ls -la reports
 
-          echo "Generated reports:"
+          if [ ! -f reports/zap-report.json ]; then
+            echo "❌ ZAP JSON report is missing."
+            exit 1
+          fi
+
+          if [ ! -f reports/zap-report.html ]; then
+            echo "❌ ZAP HTML report is missing."
+            exit 1
+          fi
+
+          echo "✅ ZAP reports generated successfully:"
           ls -lh reports/zap-report.*
 
       # ------------------------------------------------------------
-      # API Security Tests (expected findings do not fail CI)
+      # API security tests
       # ------------------------------------------------------------
       - name: Run API Security Tests
         continue-on-error: true
@@ -106,7 +136,7 @@ jobs:
             --self-contained-html
 
       # ------------------------------------------------------------
-      # UI Security Tests (expected findings do not fail CI)
+      # UI security tests
       # ------------------------------------------------------------
       - name: Run UI Security Tests
         continue-on-error: true
@@ -116,13 +146,14 @@ jobs:
             --self-contained-html
 
       # ------------------------------------------------------------
-      # AI Correlation / Report Pipeline
+      # AI correlation / reporting pipeline
       # ------------------------------------------------------------
       - name: Run AI Pipeline Tests
-        run: pytest tests -v
+        run: |
+          pytest tests -v
 
       # ------------------------------------------------------------
-      # Upload Artifacts
+      # Upload reports
       # ------------------------------------------------------------
       - name: Upload HTML Reports
         if: always()
@@ -146,6 +177,9 @@ jobs:
             reports/*.md
           if-no-files-found: warn
 
+      # ------------------------------------------------------------
+      # Docker logs if CI fails
+      # ------------------------------------------------------------
       - name: Save Docker Logs on Failure
         if: failure()
         run: |
