@@ -85,18 +85,6 @@ jobs:
 
       # ------------------------------------------------------------
       # Wait for ZAP API
-      #
-      # IMPORTANT:
-      # Do NOT use the published host port 31002 here.
-      #
-      # The logs showed that:
-      #   - ZAP is healthy
-      #   - ZAP listens on 8080
-      #   - the API works from inside the container
-      #   - host -> 31002 is the failing path
-      #
-      # Therefore readiness is checked directly inside the ZAP
-      # container.
       # ------------------------------------------------------------
       - name: Wait for ZAP API
         run: |
@@ -105,38 +93,92 @@ jobs:
           elapsed=0
 
           while [ "$elapsed" -lt "$timeout" ]; do
-            echo "Checking ZAP API from inside container... ${elapsed}/${timeout}s"
+            echo "Checking ZAP API... ${elapsed}/${timeout}s"
 
             response="$(
-              docker exec secure-test-ops-zap \
-                sh -c 'wget -qO- "http://127.0.0.1:8080/JSON/core/view/version/?apikey=secure-test-ops"' \
-                2>/dev/null \
+              curl \
+                --noproxy '*' \
+                -sS \
+                --connect-timeout 5 \
+                --max-time 10 \
+                -w '\nHTTP_STATUS:%{http_code}' \
+                "http://127.0.0.1:31002/JSON/core/view/version/?apikey=secure-test-ops" \
                 || true
             )"
 
-            if printf '%s\n' "$response" \
-              | python -m json.tool > /dev/null 2>&1 \
-              && printf '%s\n' "$response" \
-              | grep -q '"version"'; then
+            body="$(printf '%s\n' "$response" | sed '/HTTP_STATUS:/d')"
+            status="$(printf '%s\n' "$response" | awk -F: '/HTTP_STATUS:/ {print $2}')"
+
+            if [ "$status" = "200" ] &&
+              printf '%s\n' "$body" | python -m json.tool > /dev/null 2>&1 &&
+              printf '%s\n' "$body" | grep -q '"version"'; then
 
               echo "ZAP API is ready."
               echo "ZAP API response:"
-              printf '%s\n' "$response"
+              printf '%s\n' "$body"
               exit 0
             fi
 
-            echo "ZAP API is not ready yet."
+            echo "ZAP API is not ready yet. HTTP status: ${status:-unavailable}"
 
-            if [ $((elapsed % 15)) -eq 0 ]; then
-              echo "ZAP container status:"
+            # --------------------------------------------------------
+            # Diagnostic information every 30 seconds
+            # --------------------------------------------------------
+            if [ $((elapsed % 30)) -eq 0 ]; then
+              echo "============================================================"
+              echo "ZAP CONTAINER STATUS"
+              echo "============================================================"
+
               docker compose \
                 -f docker/docker-compose.yml \
                 ps zap
 
-              echo "Recent ZAP logs:"
+              echo "============================================================"
+              echo "ZAP CONTAINER INSPECT"
+              echo "============================================================"
+
+              docker inspect secure-test-ops-zap \
+                --format='Status={{.State.Status}} Health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'
+
+              echo "============================================================"
+              echo "ZAP PORT MAPPING"
+              echo "============================================================"
+
+              docker port secure-test-ops-zap
+
+              echo "============================================================"
+              echo "ZAP API CHECK FROM INSIDE CONTAINER"
+              echo "============================================================"
+
+              docker exec secure-test-ops-zap \
+                sh -c 'wget -qO- "http://127.0.0.1:8080/JSON/core/view/version/?apikey=secure-test-ops" || true'
+
+              echo
+
+              echo "============================================================"
+              echo "DIRECT HOST ZAP CHECK WITHOUT PROXY"
+              echo "============================================================"
+
+              curl \
+                --noproxy '*' \
+                -v \
+                --connect-timeout 5 \
+                --max-time 10 \
+                "http://127.0.0.1:31002/JSON/core/view/version/?apikey=secure-test-ops" \
+                || true
+
+              echo
+
+              echo "============================================================"
+              echo "RECENT ZAP LOGS"
+              echo "============================================================"
+
               docker compose \
                 -f docker/docker-compose.yml \
-                logs --tail=30 --no-color zap
+                logs --tail=60 --no-color zap
+
+              echo
+              echo "============================================================"
             fi
 
             sleep "$interval"
@@ -146,12 +188,12 @@ jobs:
           echo "ZAP failed to become ready within ${timeout}s."
 
           echo "============================================================"
-          echo "FINAL ZAP STATUS"
+          echo "FINAL DOCKER COMPOSE STATUS"
           echo "============================================================"
 
           docker compose \
             -f docker/docker-compose.yml \
-            ps zap
+            ps
 
           echo "============================================================"
           echo "FINAL ZAP INSPECT"
@@ -161,11 +203,31 @@ jobs:
             --format='Status={{.State.Status}} Health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'
 
           echo "============================================================"
+          echo "FINAL ZAP PORTS"
+          echo "============================================================"
+
+          docker port secure-test-ops-zap
+
+          echo "============================================================"
           echo "FINAL ZAP API CHECK FROM INSIDE CONTAINER"
           echo "============================================================"
 
           docker exec secure-test-ops-zap \
             sh -c 'wget -qO- "http://127.0.0.1:8080/JSON/core/view/version/?apikey=secure-test-ops" || true'
+
+          echo
+
+          echo "============================================================"
+          echo "FINAL DIRECT HOST ZAP CHECK WITHOUT PROXY"
+          echo "============================================================"
+
+          curl \
+            --noproxy '*' \
+            -v \
+            --connect-timeout 5 \
+            --max-time 10 \
+            "http://127.0.0.1:31002/JSON/core/view/version/?apikey=secure-test-ops" \
+            || true
 
           echo
 
@@ -185,6 +247,10 @@ jobs:
       - name: Run ZAP Baseline Scan
         continue-on-error: true
         run: |
+          echo "============================================================"
+          echo "STARTING ZAP BASELINE SCAN"
+          echo "============================================================"
+
           docker run --rm \
             --user root \
             --network docker_security-testing \
@@ -193,13 +259,50 @@ jobs:
             zap-baseline.py \
               -t http://juice-shop:3000 \
               -J /zap/wrk/zap-report.json \
-              -I
+              -I \
+              -d
 
-          echo "Reports after scan:"
-          ls -la reports
+          echo
+          echo "============================================================"
+          echo "REPORTS AFTER ZAP SCAN"
+          echo "============================================================"
+
+          ls -lah reports
+
+          echo
+          echo "============================================================"
+          echo "GENERATED FILES"
+          echo "============================================================"
+
+          find reports -maxdepth 2 -type f -print
+
+          echo
+          echo "============================================================"
+          echo "ZAP YAML IF GENERATED"
+          echo "============================================================"
+
+          if [ -f reports/zap.yaml ]; then
+            cat reports/zap.yaml
+          else
+            echo "No zap.yaml generated."
+          fi
+
+          echo
+          echo "============================================================"
+          echo "JSON REPORT CHECK"
+          echo "============================================================"
+
+          if [ -f reports/zap-report.json ]; then
+            echo "zap-report.json exists."
+            ls -lh reports/zap-report.json
+            head -c 1000 reports/zap-report.json
+            echo
+          else
+            echo "WARNING: zap-report.json was NOT generated."
+          fi
 
       # ------------------------------------------------------------
-      # Verify ZAP JSON Report
+      # Verify only JSON report (AI pipeline input)
       # ------------------------------------------------------------
       - name: Verify ZAP JSON Report
         run: |
