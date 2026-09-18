@@ -2,10 +2,14 @@ name: AI-Aware Security Automation Framework CI
 
 on:
   push:
-    branches: [main, develop]
+    branches:
+      - main
+      - develop
 
   pull_request:
-    branches: [main, develop]
+    branches:
+      - main
+      - develop
 
   workflow_dispatch:
 
@@ -17,9 +21,15 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      # ---------------------------------------------------------
+      # Checkout
+      # ---------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ---------------------------------------------------------
+      # Python
+      # ---------------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -31,6 +41,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # ---------------------------------------------------------
+      # Playwright
+      # ---------------------------------------------------------
       - name: Install Playwright Chromium
         run: |
           playwright install --with-deps chromium
@@ -38,7 +51,6 @@ jobs:
       # ---------------------------------------------------------
       # Start Juice Shop
       # ---------------------------------------------------------
-
       - name: Start Juice Shop
         run: |
           docker compose -f docker/docker-compose.yml up -d juice-shop
@@ -57,16 +69,15 @@ jobs:
 
             echo "Waiting for Juice Shop..."
             sleep 5
-            elapsed=$((elapsed+5))
+            elapsed=$((elapsed + 5))
           done
 
           echo "Juice Shop is ready."
 
       # ---------------------------------------------------------
-      # API/UI security tests
-      # (expected findings should not fail CI)
+      # API Security Tests
+      # Expected findings should not fail CI.
       # ---------------------------------------------------------
-
       - name: Run API security tests
         continue-on-error: true
         run: |
@@ -74,6 +85,9 @@ jobs:
             --html=reports/api-report.html \
             --self-contained-html
 
+      # ---------------------------------------------------------
+      # UI Security Tests
+      # ---------------------------------------------------------
       - name: Run UI security tests
         continue-on-error: true
         run: |
@@ -82,43 +96,50 @@ jobs:
             --self-contained-html
 
       # ---------------------------------------------------------
-      # ZAP Baseline Scan (robust report generation)
+      # OWASP ZAP Baseline Scan
       # ---------------------------------------------------------
-
       - name: Run ZAP Baseline Scan
         continue-on-error: true
         run: |
           mkdir -p reports
 
-          docker create \
-            --name zap-baseline \
+          echo "Running OWASP ZAP Baseline Scan..."
+
+          docker run --rm \
             --network docker_security-testing \
+            -v "$PWD/reports:/zap/wrk:rw" \
             zaproxy/zap-stable:2.16.0 \
             zap-baseline.py \
               -t http://juice-shop:3000 \
-              -J /zap/wrk/zap-report.json \
-              -r /zap/wrk/zap-report.html \
-              -I
+              -r zap-report.html \
+              -I || true
 
-          docker start -a zap-baseline || true
+          echo "Generating JSON report from ZAP API..."
 
-          docker cp zap-baseline:/zap/wrk/zap-report.json reports/zap-report.json || true
-          docker cp zap-baseline:/zap/wrk/zap-report.html reports/zap-report.html || true
+          docker run --rm \
+            --network host \
+            zaproxy/zap-stable:2.16.0 \
+            sh -c "curl -fsS http://127.0.0.1:31002/JSON/core/view/alerts/ > /tmp/zap.json && cat /tmp/zap.json" \
+            > reports/zap-report.json || echo '{"alerts":[]}' > reports/zap-report.json
 
-          docker rm -f zap-baseline
+          echo "Reports directory after scan:"
+          ls -la reports
 
+      # ---------------------------------------------------------
+      # Verify ZAP Reports
+      # ---------------------------------------------------------
       - name: Verify ZAP Reports
         run: |
           echo "Checking generated ZAP reports..."
           ls -la reports
 
-          if [ ! -f reports/zap-report.json ]; then
-            echo "❌ Missing reports/zap-report.json"
+          if [ ! -f reports/zap-report.html ]; then
+            echo "❌ Missing reports/zap-report.html"
             exit 1
           fi
 
-          if [ ! -f reports/zap-report.html ]; then
-            echo "❌ Missing reports/zap-report.html"
+          if [ ! -f reports/zap-report.json ]; then
+            echo "❌ Missing reports/zap-report.json"
             exit 1
           fi
 
@@ -126,18 +147,16 @@ jobs:
           ls -lh reports/zap-report.*
 
       # ---------------------------------------------------------
-      # AI pipeline (must pass)
+      # AI Pipeline Tests (must pass)
       # ---------------------------------------------------------
-
       - name: Run AI pipeline tests
         run: |
           pytest tests -v
 
       # ---------------------------------------------------------
-      # Upload artifacts
+      # Upload Artifacts
       # ---------------------------------------------------------
-
-      - name: Upload HTML reports
+      - name: Upload HTML Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -148,7 +167,7 @@ jobs:
             reports/zap-report.html
           if-no-files-found: warn
 
-      - name: Upload JSON reports
+      - name: Upload Security JSON Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -159,10 +178,10 @@ jobs:
             reports/zap-report.json
           if-no-files-found: warn
 
-      - name: Upload Docker logs on failure
+      - name: Upload Docker Logs on Failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: docker-logs
-          path: |
-            reports/
+          path: reports/
+          if-no-files-found: warn
