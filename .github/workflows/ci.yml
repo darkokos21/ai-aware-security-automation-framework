@@ -70,15 +70,21 @@ jobs:
           timeout=120
           elapsed=0
 
-          until curl -fs http://localhost:31001 > /dev/null; do
+          until curl -fsS \
+            --connect-timeout 5 \
+            --max-time 10 \
+            http://localhost:31001 > /dev/null; do
+
             if [ "$elapsed" -ge "$timeout" ]; then
               echo "Juice Shop failed to start."
-              docker compose -f docker/docker-compose.yml logs juice-shop
+              docker compose -f docker/docker-compose.yml ps
+              docker compose -f docker/docker-compose.yml logs --no-color juice-shop
               exit 1
             fi
 
+            echo "Waiting for Juice Shop... ${elapsed}s"
             sleep 5
-            elapsed=$((elapsed+5))
+            elapsed=$((elapsed + 5))
           done
 
           echo "Juice Shop is ready."
@@ -89,23 +95,63 @@ jobs:
       - name: Wait for ZAP API
         run: |
           timeout=180
+          interval=5
           elapsed=0
 
-          until curl -s "http://localhost:31002/JSON/core/view/version/?apikey=secure-test-ops" \
-            | grep version > /dev/null; do
+          while [ "$elapsed" -lt "$timeout" ]; do
+            echo "Checking ZAP API... ${elapsed}/${timeout}s"
 
-            if [ "$elapsed" -ge "$timeout" ]; then
-              echo "ZAP failed to start."
-              docker compose -f docker/docker-compose.yml logs zap
-              exit 1
+            response="$(curl -sS \
+              --connect-timeout 5 \
+              --max-time 10 \
+              -w '\nHTTP_STATUS:%{http_code}' \
+              "http://127.0.0.1:31002/JSON/core/view/version/?apikey=secure-test-ops" \
+              || true)"
+
+            body="$(printf '%s\n' "$response" | sed '/HTTP_STATUS:/d')"
+            status="$(printf '%s\n' "$response" | awk -F: '/HTTP_STATUS:/ {print $2}')"
+
+            if [ "$status" = "200" ] &&
+              printf '%s\n' "$body" | python -m json.tool > /dev/null 2>&1 &&
+              printf '%s\n' "$body" | grep -q '"version"'; then
+
+              echo "ZAP API is ready."
+              echo "ZAP API response:"
+              printf '%s\n' "$body"
+              exit 0
             fi
 
-            echo "Waiting for ZAP... ${elapsed}s"
-            sleep 5
-            elapsed=$((elapsed+5))
+            echo "ZAP API is not ready yet. HTTP status: ${status:-unavailable}"
+
+            if [ $((elapsed % 30)) -eq 0 ]; then
+              echo "ZAP container status:"
+              docker compose \
+                -f docker/docker-compose.yml \
+                ps zap
+
+              echo "Recent ZAP logs:"
+              docker compose \
+                -f docker/docker-compose.yml \
+                logs --tail=40 --no-color zap
+            fi
+
+            sleep "$interval"
+            elapsed=$((elapsed + interval))
           done
 
-          echo "ZAP API is ready."
+          echo "ZAP failed to become ready within ${timeout}s."
+
+          echo "Final Docker Compose status:"
+          docker compose \
+            -f docker/docker-compose.yml \
+            ps
+
+          echo "Final ZAP logs:"
+          docker compose \
+            -f docker/docker-compose.yml \
+            logs --tail=300 --no-color zap
+
+          exit 1
 
       # ------------------------------------------------------------
       # ZAP Baseline Scan
@@ -113,34 +159,43 @@ jobs:
       - name: Run ZAP Baseline Scan
         continue-on-error: true
         run: |
+          mkdir -p reports
+          chmod -R 777 reports
+
           docker run --rm \
             --user root \
             --network docker_security-testing \
-            -v "$PWD/reports:/zap/wrk:rw" \
+            -v "$GITHUB_WORKSPACE/reports:/zap/wrk:rw" \
             zaproxy/zap-stable:2.16.0 \
             zap-baseline.py \
               -t http://juice-shop:3000 \
               -J /zap/wrk/zap-report.json \
+              -r /zap/wrk/zap-report.html \
               -I
 
-          echo "Reports after scan:"
-          ls -la reports
+          echo "Reports after ZAP scan:"
+          ls -lah reports
 
       # ------------------------------------------------------------
-      # Verify only JSON report (AI pipeline input)
+      # Verify ZAP Reports
       # ------------------------------------------------------------
-      - name: Verify ZAP JSON Report
+      - name: Verify ZAP Reports
         run: |
-          echo "Checking generated reports..."
+          echo "Checking generated ZAP reports..."
           ls -la reports
 
           if [ ! -s reports/zap-report.json ]; then
-            echo "Missing or empty reports/zap-report.json"
+            echo "❌ Missing or empty reports/zap-report.json"
             exit 1
           fi
 
-          echo "ZAP JSON report exists."
-          head reports/zap-report.json
+          if [ ! -s reports/zap-report.html ]; then
+            echo "❌ Missing or empty reports/zap-report.html"
+            exit 1
+          fi
+
+          echo "✅ ZAP reports generated successfully:"
+          ls -lh reports/zap-report.json reports/zap-report.html
 
       # ------------------------------------------------------------
       # API Security Tests
@@ -156,7 +211,7 @@ jobs:
       # ------------------------------------------------------------
       # UI Security Tests
       # ------------------------------------------------------------
-      - name: Run UI security tests
+      - name: Run UI Security Tests
         continue-on-error: true
         run: |
           pytest ui_tests \
@@ -167,7 +222,7 @@ jobs:
       # ------------------------------------------------------------
       # AI Pipeline Tests (must pass)
       # ------------------------------------------------------------
-      - name: Run AI pipeline tests
+      - name: Run AI Pipeline Tests
         run: |
           pytest tests -v
 
@@ -189,5 +244,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: docker-logs
-          path: |
-            reports/
+          path: reports/
