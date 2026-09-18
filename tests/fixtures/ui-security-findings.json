@@ -1,0 +1,24 @@
+[
+  {
+    "title": "Content Security Policy header is missing",
+    "description": "The application does not return a Content-Security-Policy header.",
+    "severity": "medium",
+    "endpoint": "/",
+    "remediation": "Define and return an appropriate Content-Security-Policy.",
+    "cwe_id": "693",
+    "confidence": 1.0,
+    "evidence": "Security test failed: test_security_headers_are_exposed",
+    "test_name": "test_security_headers_are_exposed"
+  },
+  {
+    "title": "Referrer-Policy header is missing",
+    "description": "The application does not return a Referrer-Policy header.",
+    "severity": "low",
+    "endpoint": "/",
+    "remediation": "Configure an appropriate Referrer-Policy response header.",
+    "cwe_id": "693",
+    "confidence": 1.0,
+    "evidence": "Security test failed: test_referrer_policy_is_configured",
+    "test_name": "test_referrer_policy_is_configured"
+  }
+]

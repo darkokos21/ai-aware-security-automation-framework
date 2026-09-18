@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     PASSWORD: str | None = None
     JWT_TOKEN: str | None = None
 
-    ZAP_URL: str = "http://zap:8080"
+    ZAP_URL: str = "http://zap:31002"
     ZAP_API_KEY: str | None = None
     ZAP_TARGET_URL: str = "http://juice-shop:3000"
 

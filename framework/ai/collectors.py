@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -10,9 +11,48 @@ from framework.ai.models import (
     SecurityFinding,
 )
 
+_HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+
+
+def _strip_html(value: Any) -> str:
+    """Remove simple HTML markup used in native ZAP report text."""
+
+    text = _HTML_TAG_PATTERN.sub(" ", str(value or ""))
+
+    return " ".join(text.split())
+
 
 class ZapFindingCollector:
-    """Collect normalized findings from a ZAP JSON report."""
+    """
+    Collect normalized findings from a ZAP JSON report.
+
+    Two report layouts are supported:
+
+    * The framework's own flat layout produced by ``zap.reporter``:
+      a JSON list (or ``{"findings": [...]}``) of alert objects.
+    * ZAP's native "traditional JSON" report, as written by
+      ``zap-baseline.py -J`` or ``core/other/jsonreport``:
+      ``{"site": [{"alerts": [{"instances": [...]}]}]}``.
+
+    Native reports are flattened to one finding per alert instance so
+    that every affected URL becomes its own finding, matching the flat
+    layout.
+    """
+
+    RISK_CODES = {
+        "0": "Informational",
+        "1": "Low",
+        "2": "Medium",
+        "3": "High",
+    }
+
+    CONFIDENCE_CODES = {
+        "0": "False Positive",
+        "1": "Low",
+        "2": "Medium",
+        "3": "High",
+        "4": "High",
+    }
 
     def __init__(self, report_path: str | Path) -> None:
         self.report_path = Path(report_path)
@@ -33,6 +73,8 @@ class ZapFindingCollector:
 
         if isinstance(data, list):
             findings = data
+        elif isinstance(data, dict) and "site" in data:
+            findings = self._flatten_native_report(data)
         elif isinstance(data, dict):
             findings = data.get("findings", [])
         else:
@@ -53,6 +95,99 @@ class ZapFindingCollector:
             for finding in findings
             if isinstance(finding, dict)
         ]
+
+    @classmethod
+    def _flatten_native_report(
+        cls,
+        data: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Convert ZAP's native JSON report into flat alert objects."""
+
+        sites: Any = data.get("site", [])
+
+        if isinstance(sites, dict):
+            sites = [sites]
+
+        if not isinstance(sites, list):
+            raise ValueError(
+                "Invalid ZAP report format: "
+                "'site' must be a list."
+            )
+
+        flattened: list[dict[str, Any]] = []
+
+        for site in sites:
+            if not isinstance(site, dict):
+                continue
+
+            alerts = site.get("alerts", [])
+
+            if not isinstance(alerts, list):
+                continue
+
+            for alert in alerts:
+                if not isinstance(alert, dict):
+                    continue
+
+                flattened.extend(
+                    cls._flatten_native_alert(alert)
+                )
+
+        return flattened
+
+    @classmethod
+    def _flatten_native_alert(
+        cls,
+        alert: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        risk_code = str(alert.get("riskcode", "")).strip()
+        confidence_code = str(alert.get("confidence", "")).strip()
+
+        base = {
+            "name": str(
+                alert.get("alert")
+                or alert.get("name")
+                or "Unknown ZAP finding"
+            ),
+            "risk": cls.RISK_CODES.get(
+                risk_code,
+                cls._risk_from_description(alert.get("riskdesc")),
+            ),
+            "confidence": cls.CONFIDENCE_CODES.get(
+                confidence_code,
+                "Medium",
+            ),
+            "description": _strip_html(alert.get("desc")),
+            "solution": _strip_html(alert.get("solution")),
+            "reference": _strip_html(alert.get("reference")),
+            "cwe_id": str(alert.get("cweid") or ""),
+            "wasc_id": str(alert.get("wascid") or ""),
+        }
+
+        instances = alert.get("instances", [])
+
+        if not isinstance(instances, list) or not instances:
+            return [dict(base, url="", evidence="")]
+
+        return [
+            dict(
+                base,
+                url=str(instance.get("uri") or ""),
+                evidence=str(instance.get("evidence") or ""),
+            )
+            for instance in instances
+            if isinstance(instance, dict)
+        ]
+
+    @staticmethod
+    def _risk_from_description(
+        risk_description: Any,
+    ) -> str:
+        """Extract the risk label from a ``"Medium (High)"`` string."""
+
+        label = str(risk_description or "").split("(")[0].strip()
+
+        return label or "Informational"
 
     @staticmethod
     def _normalize_finding(

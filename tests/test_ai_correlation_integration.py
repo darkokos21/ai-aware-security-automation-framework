@@ -1,21 +1,25 @@
+from pathlib import Path
+
 from framework.ai.collectors import ZapFindingCollector
 from framework.ai.correlator import FindingCorrelator
 from framework.ai.models import FindingSource
 from framework.ai.test_results import SecurityTestResultCollector
 
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+
 
 def _collect_all_findings():
     zap_findings = ZapFindingCollector(
-        "reports/zap-report.json"
+        FIXTURES_DIR / "zap-report.json"
     ).collect()
 
     api_findings = SecurityTestResultCollector(
-        "reports/api-security-findings.json",
+        FIXTURES_DIR / "api-security-findings.json",
         FindingSource.API,
     ).collect()
 
     ui_findings = SecurityTestResultCollector(
-        "reports/ui-security-findings.json",
+        FIXTURES_DIR / "ui-security-findings.json",
         FindingSource.UI,
     ).collect()
 

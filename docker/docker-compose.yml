@@ -12,15 +12,23 @@ services:
     image: zaproxy/zap-stable:2.16.0
     container_name: secure-test-ops-zap
     restart: unless-stopped
+    # ZAP only answers API requests addressed to its own host:port.
+    # Anything else is treated as a forward-proxy request, so the
+    # published port MUST equal the port ZAP listens on inside the
+    # container. Mapping 31002 -> 8080 makes "http://127.0.0.1:31002/JSON/..."
+    # get proxied to 127.0.0.1:31002 inside the container and fail with 502.
     ports:
-      - "31002:8080"
+      - "31002:31002"
+    environment:
+      # Used by the image's built-in HEALTHCHECK.
+      ZAP_PORT: "31002"
     command:
       - zap.sh
       - -daemon
       - -host
       - 0.0.0.0
       - -port
-      - "8080"
+      - "31002"
       - -silent
       - -config
       - api.addrs.addr.name=.*
@@ -28,6 +36,16 @@ services:
       - api.addrs.addr.regex=true
       - -config
       - api.key=secure-test-ops
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --silent --fail --output /dev/null
+          "http://127.0.0.1:31002/JSON/core/view/version/?apikey=secure-test-ops"
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 20s
     networks:
       - security-testing
 
@@ -40,7 +58,7 @@ services:
     volumes:
       - ..:/app
     environment:
-      ZAP_URL: http://zap:8080
+      ZAP_URL: http://zap:31002
       ZAP_API_KEY: secure-test-ops
       ZAP_TARGET_URL: http://juice-shop:3000
       BASE_URL: http://juice-shop:3000

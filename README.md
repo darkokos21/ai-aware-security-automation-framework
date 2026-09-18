@@ -1,34 +1,26 @@
-# AI-Aware Security Testing Framework
+# AI-Aware Security Automation Framework
 
-An AI-aware security testing automation framework that combines **API security testing, Playwright UI security testing, OWASP ZAP scanning, cross-source finding correlation, and AI-assisted security triage** into a single pytest-based workflow.
+A pytest-based security testing framework that combines **API security tests, Playwright UI security tests, and OWASP ZAP scanning**, then normalizes, correlates, and triages the results with an AI layer to produce an executive-level security assessment.
 
-The project is designed as a practical **QA Automation / SDET / Security Testing** portfolio project, demonstrating how modern test automation can be extended with AI-assisted analysis and reporting.
+Built as a **QA Automation / SDET / Security Testing** portfolio project, it shows how a conventional test automation stack can be extended into an end-to-end, CI-ready security pipeline.
 
-> **Test target:** OWASP Juice Shop — an intentionally vulnerable application used for authorized security testing.  
-> **Security scanner:** OWASP ZAP — used as one of the independent security-testing sources.
-
----
-
-## Features
-
-- API security testing with Python, pytest, and requests
-- UI security testing with Playwright
-- OWASP ZAP automated security scanning
-- Normalized security findings across multiple sources
-- Cross-source finding correlation
-- AI-assisted severity and remediation-priority triage
-- Deterministic AI provider for reproducible results
-- Optional OpenAI integration for LLM-based security triage
-- Structured security finding models using Pydantic
-- Executive Markdown security assessment generation
-- Pytest-based end-to-end AI security pipeline
-- HTML test reporting
-- Docker-based security testing environment
-- CI-ready project structure
+> **Target:** OWASP Juice Shop, an intentionally vulnerable application used for authorized security testing.
+> **Scanner:** OWASP ZAP, used as one of three independent security sources.
 
 ---
 
-## Security Testing Architecture
+## Why It Matters
+
+Security findings usually arrive from disconnected tools in different formats, with no shared severity model and no way to tell that three tools found the same issue. This framework treats every source the same way:
+
+- **One finding model.** API test failures, UI test failures, and ZAP alerts are normalized into a single Pydantic schema with severity, confidence, endpoint, CWE, and remediation.
+- **Cross-source correlation.** Findings that describe the same vulnerability are merged, so a missing Content Security Policy detected by ZAP, the API suite, and the UI suite becomes one finding with three sources and higher confidence.
+- **AI-assisted triage.** Each correlated finding receives a remediation priority, impact statement, and rationale. A deterministic provider keeps the pipeline reproducible in CI, and an optional OpenAI provider shows how a production LLM can be plugged in without changing the workflow.
+- **CI-native.** GitHub Actions spins up the target and scanner in Docker, runs every suite, and publishes reports as build artifacts.
+
+---
+
+## Architecture
 
 ```text
                     ┌─────────────────────┐
@@ -64,70 +56,89 @@ The project is designed as a practical **QA Automation / SDET / Security Testing
                     └─────────────────────┘
 ```
 
-The framework treats API tests, UI tests, and ZAP as independent security sources. Findings can then be correlated when multiple sources identify the same underlying security issue.
+---
+
+## What Is Tested
+
+| Source | Coverage |
+|---|---|
+| **API security tests** (`api_tests/`) | Authentication and SQL injection bypass, authorization, CORS policy, security headers, HTTP method handling, input validation, rate limiting, sensitive data exposure, smoke checks |
+| **UI security tests** (`ui_tests/`) | Browser-level security headers, login flow abuse, reflected and stored XSS |
+| **OWASP ZAP** (`zap/`) | Spider plus passive scan by default, optional active scan, with JSON, Markdown, and summary reports |
+
+Tests tagged `@pytest.mark.security` that fail are recorded as findings by a pytest plugin, so a failing test is a security finding, not just a red build.
 
 ---
 
-## AI Security Triage
+## Quick Start
 
-The AI layer converts normalized security findings into structured triage results containing:
+### Prerequisites
 
-- Severity
-- Remediation priority
-- Confidence
-- Explanation
-- Security impact
-- Remediation guidance
-- Triage rationale
+- Python 3.11 or newer
+- Docker and Docker Compose
 
-The current implementation includes a **deterministic provider**, allowing the complete pipeline to run reproducibly without requiring an external AI API.
+### Setup
 
-The architecture is provider-oriented so additional AI providers can be integrated without changing the core reporting workflow.
+```bash
+python -m venv .venv
+.venv\Scripts\Activate.ps1        # Windows
+# source .venv/bin/activate       # macOS / Linux
 
-### AI Providers
+pip install -r requirements.txt
+playwright install --with-deps chromium
 
-The framework supports two AI-triage modes:
-
-- **Deterministic AI provider** — the default provider, used for reproducible local execution and testing without external API dependencies.
-- **Optional OpenAI integration** — enables LLM-based security triage when an OpenAI API key is configured.
-
-The deterministic provider makes the complete security pipeline runnable in a controlled and reproducible environment, while the optional OpenAI provider demonstrates how the framework can be extended to use a production AI service.
-
----
-
-## Cross-Source Correlation
-
-Findings are normalized using a stable fingerprint based on their title and endpoint.
-
-When multiple independent security sources identify the same issue, the framework can represent that relationship in the finding model.
-
-For example, the current Juice Shop assessment detected a CSP-related issue across:
-
-- ZAP
-- API security testing
-- UI security testing
-
-The AI report identifies this as a cross-source correlation and can increase its remediation priority based on the available evidence.
-
----
-
-## Executive Security Assessment
-
-The AI pipeline generates:
-
-```text
-reports/ai-security-assessment.md
+copy .env.example .env            # Windows
+# cp .env.example .env            # macOS / Linux
 ```
 
-The report provides an executive-level overview before listing the individual findings.
+### Start the target and scanner
 
-Example summary:
+```bash
+docker compose -f docker/docker-compose.yml up -d juice-shop zap
+```
+
+| Service | URL |
+|---|---|
+| Juice Shop | http://localhost:31001 |
+| ZAP API | http://localhost:31002 |
+
+ZAP publishes the same port it listens on inside the container. ZAP only serves API requests addressed to its own host and port, so a mismatched mapping makes it proxy the request to itself and fail.
+
+### Run the security suites
+
+```bash
+pytest api_tests -v
+pytest ui_tests -v
+```
+
+Each run writes its findings to `reports/api-security-findings.json` or `reports/ui-security-findings.json`.
+
+### Run the ZAP scan
+
+From inside the Docker network, using the runner profile:
+
+```bash
+docker compose -f docker/docker-compose.yml --profile runner run --rm secure-test-ops python -m zap.run_scan
+```
+
+Add `--active` for an active scan. The scan writes `reports/zap-report.json`, `reports/zap-report.md`, and `reports/zap-summary.json`.
+
+### Run the AI pipeline
+
+```bash
+pytest tests -v
+```
+
+This collects all three sources, correlates them, runs triage, and writes `reports/ai-security-assessment.md`.
+
+---
+
+## Example Assessment
 
 ```text
 ## Executive Summary
 
 ### Findings by Priority
-
 - Critical: 1
 - High: 1
 - Medium: 4
@@ -135,29 +146,68 @@ Example summary:
 - Informational: 1
 
 ### Sources
-
 - API security tests
 - UI security tests
 - ZAP
 
 ### Cross-Source Correlations
-
 - 1 finding detected across multiple independent security sources
 
 Total findings: 9
 ```
 
-Individual findings include:
+Each finding then lists priority, severity, confidence, sources, endpoint, explanation, impact, remediation, and the triage rationale.
 
-- Priority
-- Severity
-- Confidence
-- Source
-- Endpoint
-- Explanation
-- Impact
-- Remediation
-- AI triage rationale
+---
+
+## AI Providers
+
+| Provider | Purpose |
+|---|---|
+| `deterministic` (default) | Rule-based triage. Reproducible, no external calls, used in CI. |
+| `openai` | LLM-based triage when `OPENAI_API_KEY` is set. Selected with `AI_PROVIDER=openai`. |
+
+Providers share one interface, so adding another is a single class.
+
+---
+
+## CI Pipeline
+
+The GitHub Actions workflow in `.github/workflows/ci.yml`:
+
+1. Installs Python dependencies and Playwright Chromium.
+2. Starts Juice Shop and the ZAP daemon with Docker Compose and waits for both.
+3. Runs a ZAP baseline scan against Juice Shop and writes `reports/zap-report.json`.
+4. Runs the API and UI security suites. These are allowed to fail, because failures are findings.
+5. Runs the AI pipeline tests, which must pass.
+6. Uploads all reports as a build artifact, plus Docker logs on failure.
+
+The ZAP collector accepts both ZAP's native JSON report, as produced by the baseline scan, and the framework's own flat report format.
+
+---
+
+## Project Structure
+
+```text
+├── api_tests/                 API security tests
+├── ui_tests/                  Playwright UI security tests
+├── tests/                     AI pipeline unit and integration tests
+│   └── fixtures/              Committed sample reports used by the tests
+├── zap/                       ZAP client, scanner, reporter, run_scan entry point
+├── framework/
+│   ├── ai/                    Collectors, correlator, triage providers, report generator
+│   ├── config/                Pydantic settings loaded from .env
+│   ├── browser/               Playwright browser management
+│   ├── utils/                 HTTP API client and helpers
+│   ├── security_reporter.py   Maps failed security tests to findings
+│   └── security_pytest_plugin.py
+├── services/                  Health checks for the target and ZAP
+├── docker/                    Dockerfile and docker-compose.yml
+├── reports/                   Generated reports (gitignored)
+├── .github/workflows/ci.yml
+├── pytest.ini
+└── requirements.txt
+```
 
 ---
 
@@ -165,228 +215,19 @@ Individual findings include:
 
 | Area | Technology |
 |---|---|
-| Language | Python 3.11 |
-| Test Framework | pytest |
-| API Testing | requests |
-| UI Testing | Playwright |
-| Security Scanner | OWASP ZAP |
-| Data Models | Pydantic |
-| Target Application | OWASP Juice Shop |
-| Containers | Docker / Docker Compose |
-| Reporting | Markdown / pytest HTML |
+| Language | Python 3.11+ |
+| Test framework | pytest, pytest-html |
+| API testing | requests |
+| UI testing | Playwright |
+| Security scanner | OWASP ZAP 2.16 |
+| Data models | Pydantic v2 |
+| AI triage | Deterministic provider, optional OpenAI |
+| Target application | OWASP Juice Shop |
+| Containers | Docker, Docker Compose |
 | CI | GitHub Actions |
-
----
-
-## Project Structure
-
-```text
-AI-Aware Security Testing Framework/
-│
-├── framework/
-│   └── ai/
-│       ├── models.py
-│       ├── providers.py
-│       ├── triage.py
-│       └── report_generator.py
-│
-├── tests/
-│   ├── api/
-│   ├── ui/
-│   ├── zap/
-│   ├── test_ai_pipeline.py
-│   └── test_ai_report_generator.py
-│
-├── reports/
-│   └── ai-security-assessment.md
-│
-├── config/
-├── docker/
-├── .github/
-│   └── workflows/
-│
-├── Dockerfile
-├── docker-compose.yml
-├── pytest.ini
-├── requirements.txt
-└── README.md
-```
-
----
-
-## Running the Tests
-
-Activate the virtual environment first:
-
-```powershell
-.venv\Scripts\Activate.ps1
-```
-
-Run the API security tests:
-
-```powershell
-pytest tests/api -v
-```
-
-Run the UI security tests:
-
-```powershell
-pytest tests/ui -v
-```
-
-Run the OWASP ZAP security scan:
-
-```powershell
-<ZAP scan command>
-```
-
-After the security tests have generated their findings, run the end-to-end AI security pipeline:
-
-```powershell
-pytest tests/test_ai_pipeline.py -v
-```
-
-The AI pipeline aggregates the security findings, performs cross-source correlation and AI-assisted triage, and generates the executive security assessment:
-
-```text
-reports/ai-security-assessment.md
-```
-
-Run the AI report-generator tests independently:
-
-```powershell
-pytest tests/test_ai_report_generator.py -v
-```
-
-Run the complete AI-related test suite:
-
-```powershell
-pytest tests -k "test_ai" -v
-```
-
-Run the complete test suite:
-
-```powershell
-pytest -v
-```
-
----
-
-## AI Pipeline
-
-The end-to-end AI workflow is:
-
-```text
-Security Tests
-      ↓
-Raw Findings
-      ↓
-Finding Normalization
-      ↓
-Finding Correlation
-      ↓
-AI Triage
-      ↓
-Priority / Severity / Confidence
-      ↓
-Executive Security Assessment
-```
-
-Run the complete pipeline with:
-
-```powershell
-pytest tests/test_ai_pipeline.py -v
-```
-
-After a successful run, the generated assessment is available at:
-
-```text
-reports/ai-security-assessment.md
-```
-
----
-
-## OWASP Juice Shop
-
-The framework uses **OWASP Juice Shop** as its deliberately vulnerable security-testing target.
-
-This is intentional: the project is designed to detect real security weaknesses rather than test against a hardened application where no findings are expected.
-
-The generated findings therefore represent vulnerabilities and security issues exposed by the test target.
-
-**Juice Shop is the target application.**
-
-**OWASP ZAP is the security scanner.**
-
-They serve different roles in the architecture.
-
----
-
-## Current AI Security Assessment
-
-The current end-to-end pipeline successfully detects and triages findings from the Juice Shop environment across multiple sources.
-
-The demonstrated assessment includes findings such as:
-
-- SQL injection authentication bypass
-- Missing Content Security Policy
-- CORS misconfiguration
-- Unsafe TRACE handling
-- Invalid input handling
-- Missing Referrer-Policy
-- Timestamp disclosure
-- Other ZAP-detected findings
-
-The resulting report consolidates these findings into a single security assessment with AI-generated prioritization and remediation guidance.
-
----
-
-## Test Status
-
-Current AI reporting and pipeline tests:
-
-```text
-test_ai_report_generator.py
-7 passed
-
-test_ai_pipeline.py
-1 passed
-```
-
-The AI security reporting workflow is therefore covered by automated tests for:
-
-- Report generation
-- Empty reports
-- Dynamic priority aggregation
-- Security-source reporting
-- Cross-source correlation reporting
-- Provider identification
-- Raw-finding-to-report triage workflow
-
----
-
-## Project Status
-
-**Core framework:** Complete
-
-**AI triage:** Implemented
-
-**Cross-source correlation:** Implemented
-
-**Executive security reporting:** Implemented
-
-**API security testing:** Implemented
-
-**Playwright UI security testing:** Implemented
-
-**OWASP ZAP integration:** Implemented
-
-**Automated AI pipeline:** Implemented
-
-**Automated test coverage:** Implemented
 
 ---
 
 ## License
 
-This project is intended as a portfolio and learning project demonstrating security-focused QA automation, AI-assisted test analysis, and modern automated security testing practices.
+This project is a portfolio and learning project demonstrating security-focused QA automation, AI-assisted test analysis, and modern automated security testing practices. Run it only against systems you are authorized to test.

@@ -1,0 +1,57 @@
+[
+  {
+    "title": "CORS allows any origin",
+    "description": "The API responds with Access-Control-Allow-Origin: *.",
+    "severity": "medium",
+    "endpoint": "/api",
+    "remediation": "Restrict allowed origins to trusted application origins.",
+    "cwe_id": "942",
+    "confidence": 1.0,
+    "evidence": "Security test failed: test_cors_does_not_allow_any_origin",
+    "test_name": "test_cors_does_not_allow_any_origin"
+  },
+  {
+    "title": "Content Security Policy header is missing",
+    "description": "The application does not return a Content-Security-Policy header.",
+    "severity": "medium",
+    "endpoint": "/",
+    "remediation": "Define and return an appropriate Content-Security-Policy.",
+    "cwe_id": "693",
+    "confidence": 1.0,
+    "evidence": "Security test failed: test_security_header_exists[Content-Security-Policy]",
+    "test_name": "test_security_header_exists[Content-Security-Policy]"
+  },
+  {
+    "title": "TRACE HTTP method is not safely rejected",
+    "description": "The server returns HTTP 500 when receiving a TRACE request.",
+    "severity": "medium",
+    "endpoint": "/",
+    "remediation": "Disable TRACE or reject it with an appropriate 4xx/5xx response without generating a server error.",
+    "cwe_id": "749",
+    "confidence": 1.0,
+    "evidence": "Security test failed: test_trace_method_is_not_enabled",
+    "test_name": "test_trace_method_is_not_enabled"
+  },
+  {
+    "title": "SQL injection authentication bypass",
+    "description": "A SQL injection payload successfully authenticated against the login endpoint.",
+    "severity": "critical",
+    "endpoint": "/rest/user/login",
+    "remediation": "Use parameterized queries or prepared statements and validate authentication input server-side.",
+    "cwe_id": "89",
+    "confidence": 1.0,
+    "evidence": "Security test failed: test_login_sql_injection_does_not_authenticate",
+    "test_name": "test_login_sql_injection_does_not_authenticate"
+  },
+  {
+    "title": "Invalid input types cause HTTP 500",
+    "description": "Unexpected JSON field types cause an internal server error instead of controlled validation failure.",
+    "severity": "medium",
+    "endpoint": "/rest/user/login",
+    "remediation": "Validate request schema and reject invalid types with a controlled 4xx response.",
+    "cwe_id": "20",
+    "confidence": 1.0,
+    "evidence": "Security test failed: test_login_rejects_invalid_field_types",
+    "test_name": "test_login_rejects_invalid_field_types"
+  }
+]

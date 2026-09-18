@@ -85,102 +85,33 @@ jobs:
 
       # ------------------------------------------------------------
       # Wait for ZAP API
+      #
+      # ZAP only serves API requests addressed to its own host:port.
+      # The compose file therefore publishes the SAME port (31002)
+      # that ZAP listens on inside the container. With a mismatched
+      # mapping ZAP proxies the request to itself and returns 502.
       # ------------------------------------------------------------
       - name: Wait for ZAP API
         run: |
-          timeout=60
+          timeout=120
           interval=5
           elapsed=0
+          url="http://127.0.0.1:31002/JSON/core/view/version/?apikey=secure-test-ops"
 
           while [ "$elapsed" -lt "$timeout" ]; do
-            echo "Checking ZAP API... ${elapsed}/${timeout}s"
-
-            response="$(
-              curl \
-                --noproxy '*' \
-                -sS \
+            body="$(
+              curl --noproxy '*' -fsS \
                 --connect-timeout 5 \
                 --max-time 10 \
-                -w '\nHTTP_STATUS:%{http_code}' \
-                "http://127.0.0.1:31002/JSON/core/view/version/?apikey=secure-test-ops" \
-                || true
+                "$url" 2>/dev/null || true
             )"
 
-            body="$(printf '%s\n' "$response" | sed '/HTTP_STATUS:/d')"
-            status="$(printf '%s\n' "$response" | awk -F: '/HTTP_STATUS:/ {print $2}')"
-
-            if [ "$status" = "200" ] &&
-              printf '%s\n' "$body" | python -m json.tool > /dev/null 2>&1 &&
-              printf '%s\n' "$body" | grep -q '"version"'; then
-
-              echo "ZAP API is ready."
-              echo "ZAP API response:"
-              printf '%s\n' "$body"
+            if printf '%s' "$body" | grep -q '"version"'; then
+              echo "ZAP API is ready after ${elapsed}s: ${body}"
               exit 0
             fi
 
-            echo "ZAP API is not ready yet. HTTP status: ${status:-unavailable}"
-
-            # --------------------------------------------------------
-            # Diagnostic information every 30 seconds
-            # --------------------------------------------------------
-            if [ $((elapsed % 30)) -eq 0 ]; then
-              echo "============================================================"
-              echo "ZAP CONTAINER STATUS"
-              echo "============================================================"
-
-              docker compose \
-                -f docker/docker-compose.yml \
-                ps zap
-
-              echo "============================================================"
-              echo "ZAP CONTAINER INSPECT"
-              echo "============================================================"
-
-              docker inspect secure-test-ops-zap \
-                --format='Status={{.State.Status}} Health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'
-
-              echo "============================================================"
-              echo "ZAP PORT MAPPING"
-              echo "============================================================"
-
-              docker port secure-test-ops-zap
-
-              echo "============================================================"
-              echo "ZAP API CHECK FROM INSIDE CONTAINER"
-              echo "============================================================"
-
-              docker exec secure-test-ops-zap \
-                sh -c 'wget -qO- "http://127.0.0.1:8080/JSON/core/view/version/?apikey=secure-test-ops" || true'
-
-              echo
-
-              echo "============================================================"
-              echo "DIRECT HOST ZAP CHECK WITHOUT PROXY"
-              echo "============================================================"
-
-              curl \
-                --noproxy '*' \
-                -v \
-                --connect-timeout 5 \
-                --max-time 10 \
-                "http://127.0.0.1:31002/JSON/core/view/version/?apikey=secure-test-ops" \
-                || true
-
-              echo
-
-              echo "============================================================"
-              echo "RECENT ZAP LOGS"
-              echo "============================================================"
-
-              docker compose \
-                -f docker/docker-compose.yml \
-                logs --tail=60 --no-color zap
-
-              echo
-              echo "============================================================"
-            fi
-
+            echo "Waiting for ZAP API... ${elapsed}/${timeout}s"
             sleep "$interval"
             elapsed=$((elapsed + interval))
           done
@@ -188,61 +119,35 @@ jobs:
           echo "ZAP failed to become ready within ${timeout}s."
 
           echo "============================================================"
-          echo "FINAL DOCKER COMPOSE STATUS"
+          echo "DOCKER COMPOSE STATUS"
           echo "============================================================"
-
-          docker compose \
-            -f docker/docker-compose.yml \
-            ps
+          docker compose -f docker/docker-compose.yml ps
 
           echo "============================================================"
-          echo "FINAL ZAP INSPECT"
+          echo "ZAP INSPECT"
           echo "============================================================"
-
           docker inspect secure-test-ops-zap \
             --format='Status={{.State.Status}} Health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'
-
-          echo "============================================================"
-          echo "FINAL ZAP PORTS"
-          echo "============================================================"
-
           docker port secure-test-ops-zap
 
           echo "============================================================"
-          echo "FINAL ZAP API CHECK FROM INSIDE CONTAINER"
+          echo "ZAP API CHECK FROM INSIDE CONTAINER"
           echo "============================================================"
-
           docker exec secure-test-ops-zap \
-            sh -c 'wget -qO- "http://127.0.0.1:8080/JSON/core/view/version/?apikey=secure-test-ops" || true'
-
+            curl -sS --max-time 10 "http://127.0.0.1:31002/JSON/core/view/version/?apikey=secure-test-ops" || true
           echo
 
           echo "============================================================"
-          echo "FINAL DIRECT HOST ZAP CHECK WITHOUT PROXY"
+          echo "ZAP LOGS"
           echo "============================================================"
-
-          curl \
-            --noproxy '*' \
-            -v \
-            --connect-timeout 5 \
-            --max-time 10 \
-            "http://127.0.0.1:31002/JSON/core/view/version/?apikey=secure-test-ops" \
-            || true
-
-          echo
-
-          echo "============================================================"
-          echo "FINAL ZAP LOGS"
-          echo "============================================================"
-
-          docker compose \
-            -f docker/docker-compose.yml \
-            logs --tail=300 --no-color zap
+          docker compose -f docker/docker-compose.yml logs --tail=200 --no-color zap
 
           exit 1
 
       # ------------------------------------------------------------
       # ZAP Baseline Scan
+      #
+      # -J is resolved relative to /zap/wrk inside the container.
       # ------------------------------------------------------------
       - name: Run ZAP Baseline Scan
         continue-on-error: true
@@ -258,9 +163,8 @@ jobs:
             zaproxy/zap-stable:2.16.0 \
             zap-baseline.py \
               -t http://juice-shop:3000 \
-              -J /zap/wrk/zap-report.json \
-              -I \
-              -d
+              -J zap-report.json \
+              -I
 
           echo
           echo "============================================================"
@@ -268,38 +172,6 @@ jobs:
           echo "============================================================"
 
           ls -lah reports
-
-          echo
-          echo "============================================================"
-          echo "GENERATED FILES"
-          echo "============================================================"
-
-          find reports -maxdepth 2 -type f -print
-
-          echo
-          echo "============================================================"
-          echo "ZAP YAML IF GENERATED"
-          echo "============================================================"
-
-          if [ -f reports/zap.yaml ]; then
-            cat reports/zap.yaml
-          else
-            echo "No zap.yaml generated."
-          fi
-
-          echo
-          echo "============================================================"
-          echo "JSON REPORT CHECK"
-          echo "============================================================"
-
-          if [ -f reports/zap-report.json ]; then
-            echo "zap-report.json exists."
-            ls -lh reports/zap-report.json
-            head -c 1000 reports/zap-report.json
-            echo
-          else
-            echo "WARNING: zap-report.json was NOT generated."
-          fi
 
       # ------------------------------------------------------------
       # Verify only JSON report (AI pipeline input)
@@ -315,7 +187,27 @@ jobs:
           fi
 
           echo "ZAP JSON report exists."
-          head reports/zap-report.json
+          python - <<'EOF'
+          import json
+
+          with open("reports/zap-report.json", encoding="utf-8") as report:
+              data = json.load(report)
+
+          sites = data.get("site", []) if isinstance(data, dict) else []
+          if isinstance(sites, dict):
+              sites = [sites]
+
+          alerts = sum(len(site.get("alerts", [])) for site in sites)
+          instances = sum(
+              len(alert.get("instances", []))
+              for site in sites
+              for alert in site.get("alerts", [])
+          )
+
+          print(f"ZAP {data.get('@version', '?')} report: "
+                f"{len(sites)} site(s), {alerts} alert type(s), "
+                f"{instances} instance(s)")
+          EOF
 
       # ------------------------------------------------------------
       # API Security Tests
@@ -357,12 +249,26 @@ jobs:
           path: reports/
 
       # ------------------------------------------------------------
-      # Upload Docker logs if CI fails
+      # Collect and upload Docker logs if CI fails
       # ------------------------------------------------------------
+      - name: Collect Docker logs
+        if: failure()
+        run: |
+          mkdir -p reports/docker-logs
+
+          docker compose -f docker/docker-compose.yml ps \
+            > reports/docker-logs/compose-ps.txt 2>&1 || true
+
+          docker compose -f docker/docker-compose.yml logs --no-color juice-shop \
+            > reports/docker-logs/juice-shop.log 2>&1 || true
+
+          docker compose -f docker/docker-compose.yml logs --no-color zap \
+            > reports/docker-logs/zap.log 2>&1 || true
+
       - name: Upload Docker logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: docker-logs
-          path: |
-            reports/
+          path: reports/docker-logs
+          if-no-files-found: warn

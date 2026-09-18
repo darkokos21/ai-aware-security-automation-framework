@@ -1,10 +1,14 @@
+from pathlib import Path
+
 from framework.ai.collectors import ZapFindingCollector
 from framework.ai.correlator import FindingCorrelator
+
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
 
 def test_zap_findings_are_correlated() -> None:
     collector = ZapFindingCollector(
-        "reports/zap-report.json"
+        FIXTURES_DIR / "zap-report.json"
     )
 
     findings = collector.collect()
