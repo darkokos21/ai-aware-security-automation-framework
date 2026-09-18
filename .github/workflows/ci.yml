@@ -15,21 +15,21 @@ on:
 
 jobs:
   security-framework:
-    name: Run Security Automation Framework
+    name: Security Automation Pipeline
     runs-on: ubuntu-latest
 
     timeout-minutes: 45
 
     steps:
-      # ---------------------------------------------------------
+      # ------------------------------------------------------------
       # Checkout
-      # ---------------------------------------------------------
+      # ------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ---------------------------------------------------------
+      # ------------------------------------------------------------
       # Python
-      # ---------------------------------------------------------
+      # ------------------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -41,20 +41,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ---------------------------------------------------------
+      # ------------------------------------------------------------
       # Playwright
-      # ---------------------------------------------------------
+      # ------------------------------------------------------------
       - name: Install Playwright Chromium
-        run: |
-          playwright install --with-deps chromium
+        run: playwright install --with-deps chromium
 
-      # ---------------------------------------------------------
-      # Start Juice Shop
-      # ---------------------------------------------------------
-      - name: Start Juice Shop
+      # ------------------------------------------------------------
+      # Prepare reports directory
+      # ------------------------------------------------------------
+      - name: Prepare reports directory
         run: |
-          docker compose -f docker/docker-compose.yml up -d juice-shop
+          mkdir -p reports
+          chmod -R 777 reports
 
+      # ------------------------------------------------------------
+      # Start Juice Shop + ZAP
+      # ------------------------------------------------------------
+      - name: Start Docker services
+        run: |
+          docker compose -f docker/docker-compose.yml up -d juice-shop zap
+
+      # ------------------------------------------------------------
+      # Wait for Juice Shop
+      # ------------------------------------------------------------
       - name: Wait for Juice Shop
         run: |
           timeout=120
@@ -67,121 +77,117 @@ jobs:
               exit 1
             fi
 
-            echo "Waiting for Juice Shop..."
             sleep 5
-            elapsed=$((elapsed + 5))
+            elapsed=$((elapsed+5))
           done
 
           echo "Juice Shop is ready."
 
-      # ---------------------------------------------------------
-      # API Security Tests
-      # Expected findings should not fail CI.
-      # ---------------------------------------------------------
-      - name: Run API security tests
-        continue-on-error: true
+      # ------------------------------------------------------------
+      # Wait for ZAP API
+      # ------------------------------------------------------------
+      - name: Wait for ZAP API
         run: |
-          pytest api_tests -v \
-            --html=reports/api-report.html \
-            --self-contained-html
+          timeout=180
+          elapsed=0
 
-      # ---------------------------------------------------------
-      # UI Security Tests
-      # ---------------------------------------------------------
-      - name: Run UI security tests
-        continue-on-error: true
-        run: |
-          pytest ui_tests -v \
-            --html=reports/ui-report.html \
-            --self-contained-html
+          until curl -s "http://localhost:31002/JSON/core/view/version/?apikey=secure-test-ops" \
+            | grep version > /dev/null; do
 
-      # ---------------------------------------------------------
-      # OWASP ZAP Baseline Scan
-      # ---------------------------------------------------------
+            if [ "$elapsed" -ge "$timeout" ]; then
+              echo "ZAP failed to start."
+              docker compose -f docker/docker-compose.yml logs zap
+              exit 1
+            fi
+
+            echo "Waiting for ZAP... ${elapsed}s"
+            sleep 5
+            elapsed=$((elapsed+5))
+          done
+
+          echo "ZAP API is ready."
+
+      # ------------------------------------------------------------
+      # ZAP Baseline Scan
+      # ------------------------------------------------------------
       - name: Run ZAP Baseline Scan
         continue-on-error: true
         run: |
-          mkdir -p reports
-
-          echo "Running OWASP ZAP Baseline Scan..."
-
           docker run --rm \
+            --user root \
             --network docker_security-testing \
             -v "$PWD/reports:/zap/wrk:rw" \
             zaproxy/zap-stable:2.16.0 \
             zap-baseline.py \
               -t http://juice-shop:3000 \
-              -r zap-report.html \
-              -I || true
+              -J /zap/wrk/zap-report.json \
+              -I
 
-          echo "Generating JSON report from ZAP API..."
-
-          docker run --rm \
-            --network host \
-            zaproxy/zap-stable:2.16.0 \
-            sh -c "curl -fsS http://127.0.0.1:31002/JSON/core/view/alerts/ > /tmp/zap.json && cat /tmp/zap.json" \
-            > reports/zap-report.json || echo '{"alerts":[]}' > reports/zap-report.json
-
-          echo "Reports directory after scan:"
+          echo "Reports after scan:"
           ls -la reports
 
-      # ---------------------------------------------------------
-      # Verify ZAP Reports
-      # ---------------------------------------------------------
-      - name: Verify ZAP Reports
+      # ------------------------------------------------------------
+      # Verify only JSON report (AI pipeline input)
+      # ------------------------------------------------------------
+      - name: Verify ZAP JSON Report
         run: |
-          echo "Checking generated ZAP reports..."
+          echo "Checking generated reports..."
           ls -la reports
 
-          if [ ! -f reports/zap-report.html ]; then
-            echo "❌ Missing reports/zap-report.html"
+          if [ ! -s reports/zap-report.json ]; then
+            echo "Missing or empty reports/zap-report.json"
             exit 1
           fi
 
-          if [ ! -f reports/zap-report.json ]; then
-            echo "❌ Missing reports/zap-report.json"
-            exit 1
-          fi
+          echo "ZAP JSON report exists."
+          head reports/zap-report.json
 
-          echo "✅ ZAP reports generated successfully:"
-          ls -lh reports/zap-report.*
+      # ------------------------------------------------------------
+      # API Security Tests
+      # ------------------------------------------------------------
+      - name: Run API security tests
+        continue-on-error: true
+        run: |
+          pytest api_tests \
+            -v \
+            --html=reports/api-report.html \
+            --self-contained-html
 
-      # ---------------------------------------------------------
+      # ------------------------------------------------------------
+      # UI Security Tests
+      # ------------------------------------------------------------
+      - name: Run UI security tests
+        continue-on-error: true
+        run: |
+          pytest ui_tests \
+            -v \
+            --html=reports/ui-report.html \
+            --self-contained-html
+
+      # ------------------------------------------------------------
       # AI Pipeline Tests (must pass)
-      # ---------------------------------------------------------
+      # ------------------------------------------------------------
       - name: Run AI pipeline tests
         run: |
           pytest tests -v
 
-      # ---------------------------------------------------------
-      # Upload Artifacts
-      # ---------------------------------------------------------
-      - name: Upload HTML Reports
+      # ------------------------------------------------------------
+      # Upload Reports
+      # ------------------------------------------------------------
+      - name: Upload Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: html-test-reports
-          path: |
-            reports/api-report.html
-            reports/ui-report.html
-            reports/zap-report.html
-          if-no-files-found: warn
+          name: security-reports
+          path: reports/
 
-      - name: Upload Security JSON Reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-json-reports
-          path: |
-            reports/api-security-findings.json
-            reports/ui-security-findings.json
-            reports/zap-report.json
-          if-no-files-found: warn
-
-      - name: Upload Docker Logs on Failure
+      # ------------------------------------------------------------
+      # Upload Docker logs if CI fails
+      # ------------------------------------------------------------
+      - name: Upload Docker logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: docker-logs
-          path: reports/
-          if-no-files-found: warn
+          path: |
+            reports/
